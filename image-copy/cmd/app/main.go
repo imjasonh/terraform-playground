@@ -6,11 +6,14 @@ SPDX-License-Identifier: Apache-2.0
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"cloud.google.com/go/compute/metadata"
@@ -30,7 +33,7 @@ type envConfig struct {
 	Group    string `envconfig:"GROUP" required:"true"`
 	Identity string `envconfig:"IDENTITY" required:"true"`
 	Port     int    `envconfig:"PORT" default:"8080" required:"true"`
-	DstRepo  string `envconfig:"DST_REPO" required:"true"` // Fully qualified at this point.
+	DstRepo  string `envconfig:"DST_REPO" required:"true"` // Almost fully qualified at this point, just needs the final component.
 }
 
 var location, sa string
@@ -105,7 +108,8 @@ func main() {
 		log.Printf("got event: %+v", data)
 
 		src := "cgr.dev/" + data.Body.Repository
-		dst := env.DstRepo
+		dst := env.DstRepo + "/" + filepath.Base(data.Body.Repository)
+		log.Printf("Copying %s to %s...", src, dst)
 		if err := crane.Copy(src, dst,
 			crane.WithAuthFromKeychain(authn.NewMultiKeychain(
 				google.Keychain,
@@ -113,7 +117,7 @@ func main() {
 			))); err != nil {
 			return fmt.Errorf("copying image: %w", err)
 		}
-
+		log.Println("Copied!")
 		return nil
 	}
 
@@ -157,8 +161,12 @@ func (k cgKeychain) Resolve(res authn.Resource) (authn.Authenticator, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("got HTTP %d to /sts/exchange: %s", resp.StatusCode, all)
 	}
+	var m map[string]string
+	if err := json.NewDecoder(bytes.NewReader(all)).Decode(&m); err != nil {
+		return nil, err
+	}
 	return &authn.Basic{
-		Username: "",
-		Password: string(all),
+		Username: "_token",
+		Password: m["token"],
 	}, nil
 }

@@ -78,10 +78,10 @@ resource "google_artifact_registry_repository" "dst-repo" {
   format        = "DOCKER"
 }
 
-resource "google_artifact_registry_repository_iam_member" "member" {
+resource "google_artifact_registry_repository_iam_member" "pusher" {
   location   = google_artifact_registry_repository.dst-repo.location
   repository = google_artifact_registry_repository.dst-repo.name
-  role       = "roles/artifactregistry.writer"
+  role       = "roles/artifactregistry.createOnPushWriter"
   member     = "serviceAccount:${google_service_account.image-copy.email}"
 }
 
