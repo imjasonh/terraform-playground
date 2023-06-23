@@ -1,0 +1,13 @@
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image to test'
+        required: true
+
+jobs:
+  test-image:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo ding ding testing ${{ github.event.inputs.image }}
