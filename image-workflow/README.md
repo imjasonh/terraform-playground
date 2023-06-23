@@ -2,6 +2,10 @@
 
 This sets up a Cloud Run app to listen for `registry.push` events to a private Chainguard Registry group, and triggers a GitHub Actions workflow with that image ref as an input.
 
+This lets you define GitHub Actions workflows to pull and test images in response to pushes.
+
+# Usage
+
 To start, create a GitHub workflow at `.github/workflows/workflow.yaml`, with an input named `image`:
 
 ```
@@ -16,12 +20,17 @@ jobs:
   test-image:
     runs-on: ubuntu-latest
     steps:
+      # This sets up auth with the registry to be able to pull the image.
+      - uses: chainguard-dev/actions/setup-chainctl@main
+        with:
+          identity: TODO  # We'll fill this in later.
+
       - run: |
           # Your tests go here.
-          echo ding ding testing ${{ github.event.inputs.image }}
+          docker pull ${{ github.event.inputs.image }}
 ```
 
-Then Terraform apply the module (e.g., from the root of this repo):
+Then `terraform apply` the module (e.g., from the root of this repo):
 
 ```
 module "image-workflow" {
@@ -52,6 +61,8 @@ module "image-workflow" {
 }
 ```
 
+## Setting your GitHub Personal Access Token
+
 Once things have been provisioned, this module outputs a `secret-command`
 containing the command to run to upload your Github "personal access token" to
 the Google Secret Manager secret the application will use, looking something
@@ -63,3 +74,9 @@ echo -n YOUR GITHUB PAT | \
 ```
 
 The personal access token needs `actions:write` to trigger workflows.
+
+## Setting your puller identity
+
+The module also outputs the identity that was created, which can be assumed by the
+GitHub Actions workflow. This is the value that goes in the `setup-chainctl` step
+of your workflow above.

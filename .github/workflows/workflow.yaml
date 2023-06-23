@@ -9,5 +9,8 @@ jobs:
   test-image:
     runs-on: ubuntu-latest
     steps:
+      - uses: chainguard-dev/actions/setup-chainctl@main
+        with:
+          identity: 7bf08061e47a927f78ffa39cd6393f4a83ec6eb7/aa8f8890af6747f9
       - run: |
-          echo ding ding testing ${{ github.event.inputs.image }}
+          docker pull ${{ github.event.inputs.image }}

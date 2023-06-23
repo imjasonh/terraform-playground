@@ -7,14 +7,20 @@ terraform {
   }
 }
 
+provider "ko" {
+  repo = "gcr.io/${var.project_id}/${var.name}-image-workflow"
+}
+
 provider "google" {
   project = var.project_id
 }
 
+# Create a service account to run the service, with access to the GitHub PAT secret.
 resource "google_service_account" "image-workflow" {
   account_id = "${var.name}-image-workflow"
 }
 
+# Create a secret to hold the GitHub personal access token.
 resource "google_secret_manager_secret" "gh-pat" {
   project   = var.project_id
   secret_id = "${var.name}-github-pat"
@@ -23,6 +29,9 @@ resource "google_secret_manager_secret" "gh-pat" {
   }
 }
 
+# Create the initial secret version, which will let the service start up.
+# After the infrastructure is provisioned, the secret-command output will
+# show you how to populate the secret.
 resource "google_secret_manager_secret_version" "initial-secret-version" {
   secret = google_secret_manager_secret.gh-pat.id
 
@@ -36,12 +45,14 @@ resource "google_secret_manager_secret_version" "initial-secret-version" {
   }
 }
 
+# Grant the service account access to read the secret.
 resource "google_secret_manager_secret_iam_member" "grant-secret-access" {
   secret_id = google_secret_manager_secret.gh-pat.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.image-workflow.email}"
 }
 
+# Verify the base image is signed by the expected identity.
 data "cosign_verify" "base-image" {
   image = "cgr.dev/chainguard/static:latest-glibc"
 
@@ -71,11 +82,13 @@ data "cosign_verify" "base-image" {
   })
 }
 
+# Build the app into a container image.
 resource "ko_build" "image" {
   importpath  = "github.com/imjasonh/terraform-playground/image-workflow/cmd/app"
   working_dir = path.module
 }
 
+# Deploy the service, running as the Service Account, with the GitHub PAT as a secret env var.
 resource "google_cloud_run_service" "image-workflow" {
   name     = "${var.name}-image-workflow"
   location = var.location
@@ -119,6 +132,7 @@ resource "google_cloud_run_service" "image-workflow" {
   }
 }
 
+# Look up the IAM policy for "allUsers" to allow anyone to invoke the service.
 data "google_iam_policy" "noauth" {
   binding {
     role = "roles/run.invoker"
@@ -128,6 +142,7 @@ data "google_iam_policy" "noauth" {
   }
 }
 
+# Allow anyone to invoke the service.
 resource "google_cloud_run_service_iam_policy" "noauth" {
   location = google_cloud_run_service.image-workflow.location
   service  = google_cloud_run_service.image-workflow.name
@@ -139,4 +154,31 @@ resource "google_cloud_run_service_iam_policy" "noauth" {
 resource "chainguard_subscription" "subscription" {
   parent_id = var.group
   sink      = google_cloud_run_service.image-workflow.status[0].url
+}
+
+# Create an identity that can be assumed by the GitHub workflow.
+resource "chainguard_identity" "puller" {
+  parent_id   = var.group
+  name        = "${var.name}-image-workflow image puller"
+  description = <<EOF
+    This is an identity that authorizes the workflow in the
+    GitHub repo to pull from the Chainguard Registry, to test it.
+  EOF
+
+  claim_match {
+    issuer  = "https://token.actions.githubusercontent.com"
+    subject = "repo:${var.github_org}/${var.github_repo}:ref:refs/heads/main"
+  }
+}
+
+# Look up the registry.push role to grant the actions identity below.
+data "chainguard_roles" "registry-pull" {
+  name = "registry.pull"
+}
+
+# Grant the actions identity the "registry.pull" role on the group.
+resource "chainguard_rolebinding" "private-pusher-is-public-puller" {
+  identity = chainguard_identity.puller.id
+  group    = var.group
+  role     = data.chainguard_roles.registry-pull.items[0].id
 }
