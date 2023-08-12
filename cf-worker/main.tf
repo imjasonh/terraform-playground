@@ -20,12 +20,24 @@ resource "cloudflare_worker_script" "script" {
   name       = var.name
   content    = file("script.js")
 
+  module = true
+
   kv_namespace_binding {
     name         = "KV"
     namespace_id = cloudflare_workers_kv_namespace.kv_ns.id
   }
+
+  r2_bucket_binding {
+    name        = "R2"
+    bucket_name = cloudflare_r2_bucket.bucket.name
+  }
 }
 
+resource "cloudflare_r2_bucket" "bucket" {
+  account_id = var.cloudflare_account_id
+  name       = "${var.name}-bucket"
+  location   = "ENAM"
+}
 
 /*
 resource "cloudflare_worker_route" "route" {
