@@ -1,5 +1,5 @@
 /*
-Copyright 2022 Chainguard, Inc.
+Copyright 2023 Chainguard, Inc.
 SPDX-License-Identifier: Apache-2.0
 */
 
@@ -16,15 +16,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"cloud.google.com/go/compute/metadata"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/awslabs/amazon-ecr-credential-helper/ecr-login"
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	cehttp "github.com/cloudevents/sdk-go/v2/protocol/http"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
-	"github.com/google/go-containerregistry/pkg/v1/google"
 	"github.com/kelseyhightower/envconfig"
-	"google.golang.org/api/idtoken"
 )
 
 type envConfig struct {
@@ -32,22 +31,10 @@ type envConfig struct {
 	Group    string `envconfig:"GROUP" required:"true"`
 	Identity string `envconfig:"IDENTITY" required:"true"`
 	Port     int    `envconfig:"PORT" default:"8080" required:"true"`
-	DstRepo  string `envconfig:"DST_REPO" required:"true"` // Almost fully qualified at this point, just needs the final component.
+	DstRepo  string `envconfig:"DST_REPO" required:"true"`
 }
 
-var location, sa string
-
-func init() {
-	var err error
-	location, err = metadata.Zone()
-	if err != nil {
-		log.Panicf("getting location: %v", err)
-	}
-	sa, err = metadata.Email("default")
-	if err != nil {
-		log.Panicf("getting SA: %v", err)
-	}
-}
+var amazonKeychain authn.Keychain = authn.NewKeychainFromHelper(ecr.NewECRHelper(ecr.WithLogger(io.Discard)))
 
 func main() {
 	var env envConfig
@@ -55,8 +42,6 @@ func main() {
 		log.Fatalf("failed to process env var: %s", err)
 	}
 	log.Printf("env: %+v", env)
-	log.Printf("location: %s", location)
-	log.Printf("sa: %s", sa)
 
 	c, err := cloudevents.NewClientHTTP(cloudevents.WithPort(env.Port),
 		// We need to infuse the request onto context, so we can
@@ -110,7 +95,7 @@ func main() {
 		log.Printf("Copying %s to %s...", src, dst)
 		if err := crane.Copy(src, dst,
 			crane.WithAuthFromKeychain(authn.NewMultiKeychain(
-				google.Keychain,
+				amazonKeychain,
 				cgKeychain{env.Issuer, env.Identity},
 			))); err != nil {
 			return fmt.Errorf("copying image: %w", err)
@@ -141,16 +126,28 @@ func (k cgKeychain) Resolve(res authn.Resource) (authn.Authenticator, error) {
 		return authn.Anonymous, nil
 	}
 
+	ctx := context.Background()
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load configuration, %w", err)
+	}
+	creds, err := cfg.Credentials.Retrieve(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve credentials, %w", err)
+	}
+
+	awsTok, err := generateToken(ctx, creds, res.RegistryStr(), k.identity)
+	if err != nil {
+		return nil, fmt.Errorf("generating AWS token: %w", err)
+	}
+
 	url := fmt.Sprintf("%s/sts/exchange?aud=%s&identity=%s", k.issuer, res.RegistryStr(), k.identity)
 	req, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	client, err := idtoken.NewClient(context.Background(), k.issuer)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := client.Do(req)
+	req.Header.Set("Authorization", "Bearer "+awsTok)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

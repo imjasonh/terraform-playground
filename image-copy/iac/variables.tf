@@ -21,7 +21,7 @@ variable "env" {
 
 variable "group" {
   type        = string
-  description = "The Chainguard group that we are subscribing to policy violations under."
+  description = "The Chainguard group that we are subscribing to."
 }
 
 variable "dst_repo" {
