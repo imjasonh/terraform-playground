@@ -38,9 +38,9 @@ locals {
   // Using a local for the lambda breaks a cyclic dependency between
   // chainguard_identity.aws and aws_lambda_function.lambda
   lambda_name = "chainguard-lambda"
-
-  repo_name = var.dst_repo == "" ? local.lambda_name : var.dst_repo
 }
+
+data "aws_region" "current" {}
 
 resource "aws_lambda_function" "lambda" {
   function_name = local.lambda_name
@@ -55,6 +55,7 @@ resource "aws_lambda_function" "lambda" {
       IDENTITY   = chainguard_identity.aws.id
       ISSUER_URL = "https://issuer.enforce.dev"
       DST_REPO   = aws_ecr_repository.ecr_repo.repository_url
+      REGION     = data.aws_region.current.name
     }
   }
 }

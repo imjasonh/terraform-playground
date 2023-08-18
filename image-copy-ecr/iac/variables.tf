@@ -5,6 +5,5 @@ variable "group" {
 
 variable "dst_repo" {
   type        = string
-  default     = "image-copy-ecr/lambda"
   description = "The destination repo where images should be copied to."
 }

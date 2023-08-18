@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -30,6 +31,7 @@ type envConfig struct {
 	Issuer   string `envconfig:"ISSUER_URL" required:"true"`
 	Group    string `envconfig:"GROUP" required:"true"`
 	Identity string `envconfig:"IDENTITY" required:"true"`
+	Region   string `envconfig:"REGION" required:"true"`
 	Port     int    `envconfig:"PORT" default:"8080" required:"true"`
 	DstRepo  string `envconfig:"DST_REPO" required:"true"`
 }
@@ -96,7 +98,7 @@ func main() {
 		if err := crane.Copy(src, dst,
 			crane.WithAuthFromKeychain(authn.NewMultiKeychain(
 				amazonKeychain,
-				cgKeychain{env.Issuer, env.Identity},
+				cgKeychain{env.Issuer, env.Region, env.Identity},
 			))); err != nil {
 			return fmt.Errorf("copying image: %w", err)
 		}
@@ -118,7 +120,7 @@ func main() {
 }
 
 type cgKeychain struct {
-	issuer, identity string
+	issuer, region, identity string
 }
 
 func (k cgKeychain) Resolve(res authn.Resource) (authn.Authenticator, error) {
@@ -136,12 +138,20 @@ func (k cgKeychain) Resolve(res authn.Resource) (authn.Authenticator, error) {
 		return nil, fmt.Errorf("failed to retrieve credentials, %w", err)
 	}
 
-	awsTok, err := generateToken(ctx, creds, res.RegistryStr(), k.identity)
+	awsTok, err := generateToken(ctx, creds, k.region, res.RegistryStr(), k.identity)
 	if err != nil {
 		return nil, fmt.Errorf("generating AWS token: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/sts/exchange?aud=%s&identity=%s", k.issuer, res.RegistryStr(), k.identity)
+	url := (&url.URL{
+		Scheme: "https",
+		Host:   k.issuer,
+		Path:   "/sts/exchange",
+		RawQuery: url.Values{
+			"aud":      []string{res.RegistryStr()},
+			"identity": []string{k.identity},
+		}.Encode(),
+	}).String()
 	req, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
 		return nil, err

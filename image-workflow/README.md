@@ -34,7 +34,7 @@ Then `terraform apply` the module (e.g., from the root of this repo):
 
 ```
 module "image-workflow" {
-  source = "./image-workflow"  # TODO: move to enforce-events
+  source = "./image-workflow/iac"  # TODO: move to enforce-events
 
   # name is used to prefix resources created by this demo application
   # where possible.
