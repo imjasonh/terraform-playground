@@ -57,14 +57,12 @@ func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp 
 		}
 	}()
 
-	// We expect Chainguard webhooks to pass an Authorization header.
+	// Construct a verifier that ensures tokens are issued by the Chainguard
+	// issuer we expect and are intended for us.
 	auth := strings.TrimPrefix(levent.Headers["authorization"], "Bearer ")
 	if auth == "" {
 		return "", fmt.Errorf("auth header missing")
 	}
-
-	// Construct a verifier that ensures tokens are issued by the Chainguard
-	// issuer we expect and are intended for a customer webhook.
 	provider, err := oidc.NewProvider(ctx, env.Issuer)
 	if err != nil {
 		return "", fmt.Errorf("failed to create provider: %v", err)
@@ -78,24 +76,23 @@ func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp 
 		return "", fmt.Errorf("this token is intended for %s, wanted one for %s", group, env.Group)
 	}
 
+	// Check that the event is one we care about:
+	// - It's a registry push event.
+	// - It's not a push error.
+	// - It's a tag push.
 	if levent.Headers["ce-type"] != PushEventType {
-		// This doesn't represent a push, so there's nothing to do.
 		log.Printf("event type is %q, skipping", levent.Headers["ce-type"])
 		return "", nil
 	}
-
 	data := Occurrence{}
 	if err := json.Unmarshal([]byte(levent.Body), &data); err != nil {
 		return "", fmt.Errorf("unable to unmarshal event: %w", err)
 	}
-
 	if data.Body.Error != nil {
-		// This represents a push error, so there's nothing to do.
 		log.Printf("event body has error, skipping: %+v", data.Body.Error)
 		return "", nil
 	}
 	if data.Body.Tag == "" || data.Body.Type != "manifest" {
-		// This doesn't represent a tag push, so there's nothing to sync.
 		log.Printf("event body is not a tag push, skipping: %q %q", data.Body.Tag, data.Body.Type)
 		return "", nil
 	}
@@ -138,6 +135,10 @@ func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp 
 	return "", nil
 }
 
+// cgKeychain is an authn.Keychain that provides a Chainguard token capable of pulling from cgr.dev.
+//
+// It does this by first generating an AWS token, then exchanging it for a Chainguard token for the
+// specified Chainguard identity, which has been set up to be assumed by the AWS identity.
 type cgKeychain struct {
 	issuer, region, identity string
 }
