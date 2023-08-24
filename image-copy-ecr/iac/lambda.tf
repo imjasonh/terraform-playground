@@ -16,14 +16,22 @@ data "aws_iam_policy_document" "ecr-pusher" {
   statement {
     effect = "Allow"
     actions = [
-      "ecr:CompleteLayerUpload",
-      "ecr:UploadLayerPart",
-      "ecr:InitiateLayerUpload",
-      "ecr:BatchCheckLayerAvailability",
-      "ecr:PutImage",
       "ecr:CreateRepository", // Also need to create repositories under the target repository.
+
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:GetRepositoryPolicy",
+      "ecr:DescribeRepositories",
+      "ecr:ListImages",
+      "ecr:DescribeImages",
+      "ecr:BatchGetImage",
+      "ecr:InitiateLayerUpload",
+      "ecr:UploadLayerPart",
+      "ecr:CompleteLayerUpload",
+      "ecr:PutImage"
     ]
     resources = [
+      aws_ecr_repository.repo.arn,
       "${aws_ecr_repository.repo.arn}/*"
     ]
   }
@@ -32,9 +40,7 @@ data "aws_iam_policy_document" "ecr-pusher" {
     actions = [
       "ecr:GetAuthorizationToken",
     ]
-    resources = [
-      "${aws_ecr_repository.repo.arn}/*"
-    ]
+    resources = ["*"]
   }
 }
 

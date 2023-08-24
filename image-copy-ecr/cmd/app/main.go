@@ -14,7 +14,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -35,7 +34,7 @@ type envConfig struct {
 	DstRepo  string `envconfig:"DST_REPO" required:"true"`
 }
 
-var amazonKeychain authn.Keychain = authn.NewKeychainFromHelper(ecr.NewECRHelper(ecr.WithLogger(io.Discard)))
+var amazonKeychain authn.Keychain = authn.NewKeychainFromHelper(ecr.NewECRHelper(ecr.WithLogger(log.Writer())))
 
 func main() {
 	lambda.Start(handler)
@@ -52,10 +51,6 @@ func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp 
 	if err := envconfig.Process("", &env); err != nil {
 		return "", fmt.Errorf("failed to process env var: %s", err)
 	}
-	log.Printf("env: %+v", env)
-
-	log.Printf("headers: %+v", levent.Headers)
-	log.Printf("body: %+v", levent.Body)
 
 	// Construct a verifier that ensures tokens are issued by the Chainguard
 	// issuer we expect and are intended for a customer webhook.
@@ -107,7 +102,9 @@ func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp 
 	}
 
 	src := "cgr.dev/" + data.Body.Repository
-	dst := env.DstRepo + "/" + filepath.Base(data.Body.Repository)
+	//dst := filepath.Join(env.DstRepo, filepath.Base(data.Body.Repository))
+	dst := env.DstRepo // TODO: check if the repo exists and create it if not.
+
 	log.Printf("Copying %s to %s...", src, dst)
 	if err := crane.Copy(src, dst,
 		crane.WithAuthFromKeychain(authn.NewMultiKeychain(
@@ -116,7 +113,7 @@ func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp 
 		))); err != nil {
 		return "", fmt.Errorf("copying image: %w", err)
 	}
-	log.Println("Copied %s to %s", src, dst)
+	log.Printf("Copied %s to %s", src, dst)
 	return "", nil
 }
 
@@ -139,7 +136,7 @@ func (k cgKeychain) Resolve(res authn.Resource) (authn.Authenticator, error) {
 		return nil, fmt.Errorf("failed to retrieve credentials, %w", err)
 	}
 
-	awsTok, err := generateToken(ctx, creds, k.region, res.RegistryStr(), k.identity)
+	awsTok, err := generateToken(ctx, creds, k.region, k.issuer, k.identity)
 	if err != nil {
 		return nil, fmt.Errorf("generating AWS token: %w", err)
 	}
