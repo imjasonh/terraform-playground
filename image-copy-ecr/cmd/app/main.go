@@ -30,31 +30,37 @@ import (
 	"github.com/kelseyhightower/envconfig"
 )
 
-type envConfig struct {
+var amazonKeychain authn.Keychain = authn.NewKeychainFromHelper(ecrcreds.NewECRHelper(ecrcreds.WithLogger(log.Writer())))
+
+var env = struct {
 	Issuer      string `envconfig:"ISSUER_URL" required:"true"`
 	Group       string `envconfig:"GROUP" required:"true"`
 	Identity    string `envconfig:"IDENTITY" required:"true"`
 	Region      string `envconfig:"REGION" required:"true"`
 	DstRepo     string `envconfig:"DST_REPO" required:"true"`
 	FullDstRepo string `envconfig:"FULL_DST_REPO" required:"true"`
-}
+}{}
 
-var amazonKeychain authn.Keychain = authn.NewKeychainFromHelper(ecrcreds.NewECRHelper(ecrcreds.WithLogger(log.Writer())))
-
-func main() {
-	lambda.Start(handler)
+func init() {
+	if err := envconfig.Process("", &env); err != nil {
+		log.Fatalf("failed to process env var: %s", err)
+	}
 }
+func main() { lambda.Start(handler) }
 
 func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp string, err error) {
 	defer func() {
 		if err != nil {
-			log.Println("=== GOT ERROR:", err)
+			log.Printf("=== GOT ERROR: %v", err)
+			log.Printf("body: %+v", levent.Body)
+			log.Printf("env: %+v", env)
 		}
 	}()
 
-	var env envConfig
-	if err := envconfig.Process("", &env); err != nil {
-		return "", fmt.Errorf("failed to process env var: %s", err)
+	// We expect Chainguard webhooks to pass an Authorization header.
+	auth := strings.TrimPrefix(levent.Headers["authorization"], "Bearer ")
+	if auth == "" {
+		return "", fmt.Errorf("auth header missing")
 	}
 
 	// Construct a verifier that ensures tokens are issued by the Chainguard
@@ -63,17 +69,7 @@ func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp 
 	if err != nil {
 		return "", fmt.Errorf("failed to create provider: %v", err)
 	}
-	verifier := provider.Verifier(&oidc.Config{
-		ClientID: "customer",
-	})
-
-	// We expect Chainguard webhooks to pass an Authorization header.
-	auth := strings.TrimPrefix(levent.Headers["authorization"], "Bearer ")
-	if auth == "" {
-		return "", fmt.Errorf("auth header missing")
-	}
-
-	// Verify that the token is well-formed, and in fact intended for us!
+	verifier := provider.Verifier(&oidc.Config{ClientID: "customer"})
 	if tok, err := verifier.Verify(ctx, auth); err != nil {
 		return "", fmt.Errorf("unable to verify token: %w", err)
 	} else if !strings.HasPrefix(tok.Subject, "webhook:") {
@@ -82,8 +78,8 @@ func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp 
 		return "", fmt.Errorf("this token is intended for %s, wanted one for %s", group, env.Group)
 	}
 
-	// We are handling a specific event type, so filter the rest.
 	if levent.Headers["ce-type"] != PushEventType {
+		// This doesn't represent a push, so there's nothing to do.
 		log.Printf("event type is %q, skipping", levent.Headers["ce-type"])
 		return "", nil
 	}
@@ -92,8 +88,6 @@ func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp 
 	if err := json.Unmarshal([]byte(levent.Body), &data); err != nil {
 		return "", fmt.Errorf("unable to unmarshal event: %w", err)
 	}
-
-	log.Printf("got event: %+v", data)
 
 	if data.Body.Error != nil {
 		// This represents a push error, so there's nothing to do.
@@ -129,7 +123,8 @@ func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp 
 		log.Printf("Created ECR repo %s", repo)
 	}
 
-	src := "cgr.dev/" + data.Body.Repository
+	// Sync src:tag to dst:tag.
+	src := "cgr.dev/" + data.Body.Repository + ":" + data.Body.Tag
 	dst := filepath.Join(env.FullDstRepo, filepath.Base(data.Body.Repository)) + ":" + data.Body.Tag
 	log.Printf("Copying %s to %s...", src, dst)
 	if err := crane.Copy(src, dst,
