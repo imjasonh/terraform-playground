@@ -3,5 +3,5 @@ output "url" {
 }
 
 output "dst_repo" {
-  value = aws_ecr_repository.ecr_repo.repository_url
+  value = aws_ecr_repository.repo.repository_url
 }

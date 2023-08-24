@@ -102,8 +102,16 @@ func main() {
 		if err := event.DataAs(&data); err != nil {
 			return cloudevents.NewHTTPResult(http.StatusInternalServerError, "unable to unmarshal data: %w", err)
 		}
-
 		log.Printf("got event: %+v", data)
+
+		if data.Body.Error == nil {
+			// This represents a push error, so there's nothing to do.
+			return nil
+		}
+		if data.Body.Tag == "" || data.Body.Type != "manifest" {
+			// This doesn't represent a tag push, so there's nothing to sync.
+			return nil
+		}
 
 		src := "cgr.dev/" + data.Body.Repository
 		dst := env.DstRepo + "/" + filepath.Base(data.Body.Repository)

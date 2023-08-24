@@ -7,16 +7,57 @@ data "aws_iam_policy_document" "lambda" {
       identifiers = ["lambda.amazonaws.com"]
     }
   }
+}
 
-  // TODO: statement for pushing to ECR repo
+data "aws_iam_policy_document" "ecr-pusher" {
+  // Permissions needed to push to the ECR repository.
+  // https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-push.html#image-push-iam
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecr:CompleteLayerUpload",
+      "ecr:UploadLayerPart",
+      "ecr:InitiateLayerUpload",
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:PutImage",
+      "ecr:CreateRepository", // Also need to create repositories under the target repository.
+    ]
+    resources = [
+      "${aws_ecr_repository.repo.arn}/*"
+    ]
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecr:GetAuthorizationToken",
+    ]
+    resources = [
+      "${aws_ecr_repository.repo.arn}/*"
+    ]
+  }
+}
+
+data "aws_iam_policy" "lambda" {
+  name = "AWSLambdaBasicExecutionRole"
 }
 
 resource "aws_iam_role" "lambda" {
-  name               = "chainguard-lambda-role"
+  name               = "chainguard-lambda-role-jason"
   assume_role_policy = data.aws_iam_policy_document.lambda.json
+  inline_policy {
+    name   = "ecr-pusher"
+    policy = data.aws_iam_policy_document.ecr-pusher.json
+  }
+  managed_policy_arns = [data.aws_iam_policy.lambda.arn]
 }
 
-resource "aws_ecr_repository" "ecr_repo" {
+resource "aws_ecr_repository_policy" "policy" {
+  repository = aws_ecr_repository.repo.name
+  policy     = data.aws_iam_policy_document.lambda.json
+}
+
+resource "aws_ecr_repository" "repo" {
   name                 = var.dst_repo
   image_tag_mutability = "MUTABLE"
 
@@ -25,8 +66,18 @@ resource "aws_ecr_repository" "ecr_repo" {
   }
 }
 
+// Create a sub-repository for the image-copy lambda code.
+resource "aws_ecr_repository" "copier-repo" {
+  name                 = "${var.dst_repo}/image-copy"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = false
+  }
+}
+
 resource "ko_build" "image" {
-  repo        = aws_ecr_repository.ecr_repo.repository_url
+  repo        = aws_ecr_repository.copier-repo.repository_url
   importpath  = "github.com/imjasonh/terraform-playground/image-copy-ecr/cmd/app"
   working_dir = path.module
   // Disable SBOM generation due to
@@ -54,7 +105,7 @@ resource "aws_lambda_function" "lambda" {
       GROUP      = var.group
       IDENTITY   = chainguard_identity.aws.id
       ISSUER_URL = "https://issuer.enforce.dev"
-      DST_REPO   = aws_ecr_repository.ecr_repo.repository_url
+      DST_REPO   = aws_ecr_repository.repo.repository_url
       REGION     = data.aws_region.current.name
     }
   }

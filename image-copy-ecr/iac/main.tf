@@ -11,3 +11,7 @@ provider "aws" {}
 provider "ko" {}
 
 provider "chainguard" {}
+
+output "you" {
+  value = data.aws_caller_identity.current
+}
