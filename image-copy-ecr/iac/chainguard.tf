@@ -19,7 +19,7 @@ data "chainguard_roles" "puller" {
   name = "registry.pull"
 }
 
-resource "chainguard_rolebinding" "grant-list-tags" {
+resource "chainguard_rolebinding" "puller" {
   identity = chainguard_identity.aws.id
   role     = data.chainguard_roles.puller.items[0].id
   group    = var.group

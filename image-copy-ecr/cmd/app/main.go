@@ -9,17 +9,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
-	ecr "github.com/awslabs/amazon-ecr-credential-helper/ecr-login"
+	"github.com/aws/aws-sdk-go-v2/service/ecr"
+	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
+	ecrcreds "github.com/awslabs/amazon-ecr-credential-helper/ecr-login"
 	"github.com/coreos/go-oidc"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
@@ -27,14 +31,15 @@ import (
 )
 
 type envConfig struct {
-	Issuer   string `envconfig:"ISSUER_URL" required:"true"`
-	Group    string `envconfig:"GROUP" required:"true"`
-	Identity string `envconfig:"IDENTITY" required:"true"`
-	Region   string `envconfig:"REGION" required:"true"`
-	DstRepo  string `envconfig:"DST_REPO" required:"true"`
+	Issuer      string `envconfig:"ISSUER_URL" required:"true"`
+	Group       string `envconfig:"GROUP" required:"true"`
+	Identity    string `envconfig:"IDENTITY" required:"true"`
+	Region      string `envconfig:"REGION" required:"true"`
+	DstRepo     string `envconfig:"DST_REPO" required:"true"`
+	FullDstRepo string `envconfig:"FULL_DST_REPO" required:"true"`
 }
 
-var amazonKeychain authn.Keychain = authn.NewKeychainFromHelper(ecr.NewECRHelper(ecr.WithLogger(log.Writer())))
+var amazonKeychain authn.Keychain = authn.NewKeychainFromHelper(ecrcreds.NewECRHelper(ecrcreds.WithLogger(log.Writer())))
 
 func main() {
 	lambda.Start(handler)
@@ -101,10 +106,31 @@ func handler(ctx context.Context, levent events.LambdaFunctionURLRequest) (resp 
 		return "", nil
 	}
 
-	src := "cgr.dev/" + data.Body.Repository
-	//dst := filepath.Join(env.DstRepo, filepath.Base(data.Body.Repository))
-	dst := env.DstRepo // TODO: check if the repo exists and create it if not.
+	// Attempt to create the repo; if it exists, ignore it.
+	// ECR requires you to pre-create repos before pushing to them.
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to load configuration, %w", err)
+	}
+	repo := filepath.Join(env.DstRepo, filepath.Base(data.Body.Repository))
+	if _, err := ecr.New(ecr.Options{
+		Region:      env.Region,
+		Credentials: cfg.Credentials,
+	}).CreateRepository(ctx, &ecr.CreateRepositoryInput{
+		RepositoryName: &repo,
+	}); err != nil {
+		var rae *types.RepositoryAlreadyExistsException
+		if errors.As(err, &rae) {
+			log.Printf("ECR repo %s already exists", repo)
+		} else {
+			return "", fmt.Errorf("creating ECR repo %s: %w", repo, err)
+		}
+	} else {
+		log.Printf("Created ECR repo %s", repo)
+	}
 
+	src := "cgr.dev/" + data.Body.Repository
+	dst := filepath.Join(env.FullDstRepo, filepath.Base(data.Body.Repository)) + ":" + data.Body.Tag
 	log.Printf("Copying %s to %s...", src, dst)
 	if err := crane.Copy(src, dst,
 		crane.WithAuthFromKeychain(authn.NewMultiKeychain(
