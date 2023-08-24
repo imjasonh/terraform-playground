@@ -42,7 +42,7 @@ This pulls a randomly generated image from `kontain.me` and pushes it to your pr
 The Lambda function you set up will fire and copy the image to ECR. A few seconds later:
 
 ```sh
-crane ls <account-id>.dkr.ecr.us-east-1.amazonaws.com/image-copy-ecr/lambda/random
+crane ls <account-id>.dkr.ecr.<region>.amazonaws.com/<dst-repo>/random
 hello-demo
 ```
 
