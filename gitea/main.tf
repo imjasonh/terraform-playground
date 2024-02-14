@@ -19,6 +19,13 @@ resource "google_artifact_registry_repository" "repo" {
   format        = "DOCKER"
 }
 
+resource "random_id" "bucket" { byte_length = 8 }
+
+resource "google_storage_bucket" "bucket" {
+  name     = "gitea-bucket-${random_id.bucket.hex}"
+  location = var.region
+}
+
 data "oci_ref" "upstream" { ref = "gitea/gitea" }
 
 resource "cosign_copy" "copy" {
@@ -26,79 +33,49 @@ resource "cosign_copy" "copy" {
   destination = "${var.region}-docker.pkg.dev/${var.project}/${google_artifact_registry_repository.repo.name}/gitea"
 }
 
-// TODO: private IP address.
-resource "google_sql_database_instance" "db" {
-  name             = var.name
-  database_version = "POSTGRES_15"
-  region           = var.region
-
-  settings {
-    tier = "db-f1-micro"
-  }
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-resource "random_bytes" "db_user" { length = 16 }
-resource "random_bytes" "db_pass" { length = 16 }
-
-resource "google_sql_user" "db_user" {
-  instance = google_sql_database_instance.db.name
-  name     = random_bytes.db_user.hex
-  password = random_bytes.db_user.hex
-}
-
-// TODO: grant minimal permissions to the service account.
 resource "google_service_account" "sa" { account_id = "${var.name}-sa" }
 
-// TODO: Grant the SA access to the database.
+resource "google_storage_bucket_iam_binding" "bucket" {
+  bucket = google_storage_bucket.bucket.name
+  role   = "roles/storage.objectAdmin"
+  members = [
+    "serviceAccount:${google_service_account.sa.email}",
+  ]
+}
+
+// TODO: fails with
+//  - error: chmod on /data/gitea/home/.gitconfig.lock failed: Operation not permitted
 
 resource "google_cloud_run_v2_service" "svc" {
   name     = var.name
   location = var.region
 
+  launch_stage = "BETA"
+
   template {
+    scaling { max_instance_count = 1 }
+
+    execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
+
     service_account = google_service_account.sa.email
+    timeout         = "${60 * 60}s" // 1 hour
     containers {
+      resources { cpu_idle = true }
       image = cosign_copy.copy.copied_ref
-
-      // TODO: Mount this in a secret!
-      // The database settings are invalid: dial unix /cloudsql/jason-chainguard:us-central1:gitea/.s.PGSQL.5432: connect: connection refused
-      command = [
-        "/bin/sh",
-        "-c",
-        <<EOF
-set -euo pipefail
-mkdir -p /data/gitea/conf/
-cat > /data/gitea/conf/app.ini <<EOF2
-[database]
-DB_TYPE = postgres
-HOST = /cloudsql/${google_sql_database_instance.db.connection_name}
-NAME = ${var.name}
-USER = ${google_sql_user.db_user.name}
-PASSWD = ${google_sql_user.db_user.password}
-EOF2
-
-/usr/bin/entrypoint
-        EOF
-      ]
-      args = []
-
       ports {
         container_port = 3000
       }
       volume_mounts {
-        name       = "cloudsql"
-        mount_path = "/cloudsql"
+        name       = "gcs"
+        mount_path = "/data"
       }
     }
 
     volumes {
-      name = "cloudsql"
-      cloud_sql_instance {
-        instances = [google_sql_database_instance.db.connection_name]
+      name = "gcs"
+      gcs {
+        bucket    = google_storage_bucket.bucket.name
+        read_only = false
       }
     }
   }
@@ -112,4 +89,3 @@ resource "google_cloud_run_service_iam_binding" "noauth" {
 }
 
 output "url" { value = google_cloud_run_v2_service.svc.uri }
-output "db_host" { value = google_sql_database_instance.db.ip_address[0].ip_address }
