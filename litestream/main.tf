@@ -77,12 +77,12 @@ resource "google_cloud_run_v2_service" "service" {
   }
 }
 
+data "oci_ref" "litestream" { ref = "litestream/litestream" }
+
+// Copy the litestream image to GCR, if it's changed.
 // TODO: This should be an oci_copy resource.
 resource "null_resource" "crane-cp" {
-  triggers = {
-    bucket = google_storage_bucket.bucket.name
-    image  = ko_build.build.image_ref
-  }
+  triggers = { digest = data.oci_ref.litestream.digest }
 
   provisioner "local-exec" {
     command = "crane cp --platform=linux/amd64 litestream/litestream gcr.io/${local.project_id}/litestream:latest"
