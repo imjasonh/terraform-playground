@@ -2,8 +2,7 @@
 
 terraform {
   required_providers {
-    ko  = { source = "ko-build/ko" }
-    oci = { source = "chainguard-dev/oci" }
+    ko = { source = "ko-build/ko" }
   }
 }
 
@@ -43,7 +42,6 @@ resource "ko_build" "build" {
 resource "google_cloud_run_v2_service" "service" {
   provider = google-beta // for empty_dir
 
-
   name         = "litestream"
   location     = local.region
   launch_stage = "BETA"
@@ -59,8 +57,8 @@ resource "google_cloud_run_v2_service" "service" {
     }
 
     containers {
-      image = oci_append.append.image_ref
-      args  = ["replicate"]
+      image = "litestream/litestream"
+      args  = ["replicate", "/data/db.sqlite", "gcs://${google_storage_bucket.bucket.name}/litestream"]
       volume_mounts {
         name       = "data"
         mount_path = "/data"
@@ -77,39 +75,6 @@ resource "google_cloud_run_v2_service" "service" {
   }
 }
 
-data "oci_ref" "litestream" { ref = "litestream/litestream" }
-
-// Copy the litestream image to GCR, if it's changed.
-// TODO: This should be an oci_copy resource.
-resource "null_resource" "crane-cp" {
-  triggers = { digest = data.oci_ref.litestream.digest }
-
-  provisioner "local-exec" {
-    command = "crane cp --platform=linux/amd64 litestream/litestream gcr.io/${local.project_id}/litestream:latest"
-  }
-}
-
-resource "oci_append" "append" {
-  base_image = "gcr.io/${local.project_id}/litestream:latest"
-  layers = [{
-    files = {
-      "etc/litestream.yml" = {
-        contents = <<EOY
-logging:
-  level: debug
-  type: json
-  stderr: true
-
-dbs:
-  - path: /data/db.sqlite
-    replicas:
-      - url: gcs://${google_storage_bucket.bucket.name}/litestream
-        EOY
-      }
-    }
-  }]
-}
-
 // Allow all users to invoke the service
 resource "google_cloud_run_v2_service_iam_member" "public" {
   name   = google_cloud_run_v2_service.service.name
@@ -118,6 +83,4 @@ resource "google_cloud_run_v2_service_iam_member" "public" {
 }
 
 output "url" { value = google_cloud_run_v2_service.service.uri }
-
-output "litestream-image" { value = oci_append.append.image_ref }
 output "app-image" { value = ko_build.build.image_ref }
