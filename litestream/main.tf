@@ -41,9 +41,13 @@ resource "ko_build" "build" {
 }
 
 resource "google_cloud_run_v2_service" "service" {
-  name     = "litestream"
-  location = local.region
-  ingress  = "INGRESS_TRAFFIC_ALL"
+  provider = google-beta // for empty_dir
+
+
+  name         = "litestream"
+  location     = local.region
+  launch_stage = "BETA"
+  ingress      = "INGRESS_TRAFFIC_ALL"
 
   template {
     containers {
@@ -54,23 +58,21 @@ resource "google_cloud_run_v2_service" "service" {
       }
     }
 
-    /*
-
-TODO: Uncommenting this results in
-│ Error: Error waiting for Updating Service: Error code 13, message: Revision 'litestream-00009-gf9' is not ready and cannot serve traffic. Container import failed:
-
     containers {
       image = oci_append.append.image_ref
-      args  = ["replicate", "/etc/litestream.yml"]
+      args  = ["replicate"]
       volume_mounts {
         name       = "data"
         mount_path = "/data"
       }
     }
-    */
 
     volumes {
       name = "data"
+      empty_dir {
+        medium     = "MEMORY"
+        size_limit = "256Mi"
+      }
     }
   }
 }
@@ -91,8 +93,13 @@ resource "oci_append" "append" {
   base_image = "gcr.io/${local.project_id}/litestream:latest"
   layers = [{
     files = {
-      "/etc/litestream.yml" = {
+      "etc/litestream.yml" = {
         contents = <<EOY
+logging:
+  level: debug
+  type: json
+  stderr: true
+
 dbs:
   - path: /data/db.sqlite
     replicas:
