@@ -37,7 +37,7 @@ resource "google_storage_bucket_iam_binding" "binding" {
 resource "ko_build" "build" {
   importpath  = "./"
   working_dir = path.module
-  base_image  = "litestream/litestream"
+  base_image  = "cgr.dev/chainguard/litestream"
 }
 
 resource "google_cloud_run_v2_service" "service" {
@@ -50,9 +50,7 @@ resource "google_cloud_run_v2_service" "service" {
 
 
   template {
-    scaling {
-      max_instance_count = 1
-    }
+    scaling { max_instance_count = 1 }
     max_instance_request_concurrency = 1000
 
     containers {
@@ -68,7 +66,7 @@ resource "google_cloud_run_v2_service" "service" {
     }
 
     containers {
-      image = "litestream/litestream"
+      image = "chainguard/litestream"
       args  = ["replicate", "/data/db.sqlite", "gcs://${google_storage_bucket.bucket.name}/litestream"]
       volume_mounts {
         name       = "data"
