@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"time"
 
 	"github.com/chainguard-dev/clog"
 	_ "github.com/chainguard-dev/clog/gcp/init"
@@ -19,6 +20,7 @@ func main() {
 	defer cancel()
 
 	// Before serving requests, restore the database from the latest replica.
+	start := time.Now()
 	cmd := exec.CommandContext(ctx,
 		"litestream", "restore",
 		"-o", "/data/db.sqlite",
@@ -28,6 +30,12 @@ func main() {
 	if err := cmd.Run(); err != nil {
 		clog.Fatalf("failed to restore database: %v", err)
 	}
+	clog.Infof("restored database in %s", time.Since(start))
+	fi, err := os.Stat("/data/db.sqlite")
+	if err != nil {
+		clog.Fatalf("failed to stat database: %v", err)
+	}
+	clog.Infof("database size: %d bytes", fi.Size())
 
 	db, err := sql.Open("sqlite", "/data/db.sqlite")
 	if err != nil {
