@@ -37,6 +37,7 @@ resource "google_storage_bucket_iam_binding" "binding" {
 resource "ko_build" "build" {
   importpath  = "./"
   working_dir = path.module
+  base_image  = "litestream/litestream"
 }
 
 resource "google_cloud_run_v2_service" "service" {
@@ -47,12 +48,22 @@ resource "google_cloud_run_v2_service" "service" {
   launch_stage = "BETA"
   ingress      = "INGRESS_TRAFFIC_ALL"
 
+
   template {
+    scaling {
+      max_instance_count = 1
+    }
+    max_instance_request_concurrency = 1000
+
     containers {
       image = ko_build.build.image_ref
       volume_mounts {
         name       = "data"
         mount_path = "/data"
+      }
+      env {
+        name  = "BUCKET"
+        value = google_storage_bucket.bucket.name
       }
     }
 
