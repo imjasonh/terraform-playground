@@ -133,13 +133,31 @@ var (
 <head>
   <title>litestream</title>
   <script src="https://unpkg.com/htmx.org@2.0.0" integrity="sha384-wS5l5IKJBvK6sPTKa2WZ1js3d947pvWXbPJ1OmWfEuxLgeHcEbjUUA5i9V5ZkpCw" crossorigin="anonymous"></script>
+  <style>
+body {
+	font-family: Arial, sans-serif;
+}
+
+@keyframes highlight {
+    0%   { background: yellow; }
+    100% { background: none;   }
+}
+
+.highlight {
+    animation: highlight 1s;
+}
+
+div#data {
+	width: 200px;
+}
+  </style>
 </head>
 <body>
-  <h1>litestream</h1>
+  <h1>✨ litestream ✨</h1>
   <p>sqlite version: {{.Version}}</p>
   <div id="data" hx-swap="outerHTML">
 	<p>count: {{.Count}}</p>
-	<button hx-post="/click" hx-trigger="click" hx-target="#data">Refresh</button>
+	<button hx-post="/click" hx-trigger="click" hx-target="#data">Click to increment</button>
   </div>
 </body>
 </html>
@@ -147,8 +165,8 @@ var (
 
 	div = template.Must(template.New("").Parse(`
 <div id="data" hx-swap="outerHTML">
-  <p>count: {{.Count}}</p>
-  <button hx-post="/click" hx-trigger="click" hx-target="#data">Refresh</button>
+  <p class="highlight">count: {{.Count}}</p>
+  <button hx-post="/click" hx-trigger="click" hx-target="#data">Click to increment</button>
 </div>
 `))
 )
