@@ -2,7 +2,8 @@
 
 terraform {
   required_providers {
-    ko = { source = "ko-build/ko" }
+    ko  = { source = "ko-build/ko" }
+    oci = { source = "chainguard-dev/oci" }
   }
 }
 
@@ -48,8 +49,15 @@ resource "google_cloud_run_v2_service" "service" {
   launch_stage = "BETA"
   ingress      = "INGRESS_TRAFFIC_ALL"
 
-
   template {
+    scaling {
+      // Litestream only supports a single writer replica.
+      max_instance_count = 1
+    }
+
+    // Allow max concurrent requests to the single replica.
+    max_instance_request_concurrency = 1000
+
     containers {
       image = ko_build.build.image_ref
       volume_mounts {
@@ -63,7 +71,7 @@ resource "google_cloud_run_v2_service" "service" {
     }
 
     containers {
-      image = "chainguard/litestream"
+      image = "chainguard/litestream" // Cloud Run can only pull from GCR or Docker Hub. :(
       args  = ["replicate", "/data/db.sqlite", "gcs://${google_storage_bucket.bucket.name}/litestream"]
       volume_mounts {
         name       = "data"

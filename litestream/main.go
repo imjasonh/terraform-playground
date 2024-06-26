@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"html/template"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -30,7 +32,7 @@ func main() {
 	if err := cmd.Run(); err != nil {
 		clog.Fatalf("failed to restore database: %v", err)
 	}
-	clog.Infof("restored database in %s", time.Since(start))
+	clog.Infof("restoring database took %s", time.Since(start))
 	fi, err := os.Stat("/data/db.sqlite")
 	if err != nil {
 		clog.Fatalf("failed to stat database: %v", err)
@@ -47,34 +49,82 @@ func main() {
 		clog.Fatalf("failed to create table: %v", err)
 	}
 
-	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "no favicon", http.StatusNotFound)
-	})
+	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no favicon", http.StatusNotFound) })
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		row := db.QueryRow("select sqlite_version()")
-		var version string
-		if err := row.Scan(&version); err != nil {
-			clog.Fatalf("failed to query database version: %v", err)
-		}
-		clog.Infof("sqlite version: %s", version)
-		fmt.Fprintf(w, "sqlite version: %s\n", version)
-
-		if _, err := db.Exec("insert into test3 (time) values (unixepoch('now','subsec'))"); err != nil {
-			clog.Fatalf("failed to insert row: %v", err)
-		}
-		rows, err := db.Query("select count(*) from test3")
+		data, err := getData(db)
 		if err != nil {
-			clog.Fatalf("failed to query rows: %v", err)
+			clog.Fatalf("failed to get data: %v", err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var count int64
-			if err := rows.Scan(&count); err != nil {
-				clog.Fatalf("failed to scan row: %v", err)
-			}
-			clog.Infof("count: %d", count)
-			fmt.Fprintf(w, "count: %d\n", count)
+		if err := page.Execute(w, data); err != nil {
+			clog.Fatalf("failed to execute template: %v", err)
 		}
 	})
-	http.ListenAndServe(":8080", nil)
+	http.HandleFunc("/click", func(w http.ResponseWriter, r *http.Request) {
+		data, err := getData(db)
+		if err != nil {
+			clog.Fatalf("failed to get data: %v", err)
+		}
+		if err := div.Execute(w, data); err != nil {
+			clog.Fatalf("failed to execute template: %v", err)
+		}
+	})
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
+
+func getData(db *sql.DB) (data, error) {
+	row := db.QueryRow("select sqlite_version()")
+	var version string
+	if err := row.Scan(&version); err != nil {
+		return data{}, fmt.Errorf("failed to query database version: %w", err)
+	}
+
+	if _, err := db.Exec("insert into test3 (time) values (unixepoch('now','subsec'))"); err != nil {
+		return data{}, fmt.Errorf("failed to insert row: %w", err)
+	}
+	rows, err := db.Query("select count(*) from test3")
+	if err != nil {
+		return data{}, fmt.Errorf("failed to query rows: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var count int
+		if err := rows.Scan(&count); err != nil {
+			return data{}, fmt.Errorf("failed to scan row: %w", err)
+		}
+		return data{Version: version, Count: count}, nil
+	}
+	return data{}, fmt.Errorf("failed to get count")
+}
+
+type data struct {
+	Version string
+	Count   int
+}
+
+var (
+	page = template.Must(template.New("").Parse(`<!DOCTYPE html>
+<html>
+<head>
+  <title>litestream</title>
+  <script src="https://unpkg.com/htmx.org@2.0.0" integrity="sha384-wS5l5IKJBvK6sPTKa2WZ1js3d947pvWXbPJ1OmWfEuxLgeHcEbjUUA5i9V5ZkpCw" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="data" hx-swap="outerHTML" hx-get="/">
+	<h1>litestream</h1>
+	<p>sqlite version: {{.Version}}</p>
+	<p>count: {{.Count}}</p>
+	<button hx-post="/click" hx-trigger="click" hx-target="data">Refresh</button>
+  </div>
+</body>
+</html>
+`))
+
+	div = template.Must(template.New("").Parse(`
+<div id="data" hx-swap="outerHTML" hx-get="/">
+  <h1>litestream</h1>
+  <p>sqlite version: {{.Version}}</p>
+  <p>count: {{.Count}}</p>
+  <button hx-post="/click" hx-trigger="click" hx-target="data">Refresh</button>
+</div>
+`))
+)
