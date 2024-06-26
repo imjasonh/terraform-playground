@@ -3,6 +3,7 @@ module github.com/imjasonh/terraform-playground/litestream
 go 1.21.5
 
 require (
+	cloud.google.com/go/compute/metadata v0.3.0
 	github.com/chainguard-dev/clog v1.3.1
 	github.com/glebarez/go-sqlite v1.22.0
 )

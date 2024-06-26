@@ -50,3 +50,7 @@ These costs are shown in monthly units, but are billed per 100 milliseconds of a
 Since it's just SQLite, this also supports standard SQL operations and semantics. It can be trivially tested locally without access to a cloud instance, or moved to other Litestream-compatible backends like S3.
 
 There are also potentially tenancy benefits to using a separate database for each user, which can be easily achieved with multiple SQLite instances.
+
+### Running locally
+
+Since the database is just SQLite, it's very easy to run this locally. Simply `go run ./` and the service will create `db.sqlite` in the current directory. You can browse to http://localhost:8080/ to see the service running, and interact with the database using standard tools.

@@ -1,3 +1,5 @@
+cloud.google.com/go/compute/metadata v0.3.0 h1:Tz+eQXMEqDIKRsmY3cHTL6FVaynIjX2QxYC4trgAKZc=
+cloud.google.com/go/compute/metadata v0.3.0/go.mod h1:zFmK7XCadkQkj6TtorcaGlCW1hT1fIilQDwofLpJ20k=
 github.com/chainguard-dev/clog v1.3.1 h1:CDNCty5WKQhJzoOPubk0GdXt+bPQyargmfClqebrpaQ=
 github.com/chainguard-dev/clog v1.3.1/go.mod h1:cV516KZWqYc/phZsCNwF36u/KMGS+Gj5Uqeb8Hlp95Y=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=

@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"errors"
 	"flag"
 	"fmt"
 	"html/template"
@@ -12,44 +11,51 @@ import (
 	"os/exec"
 	"time"
 
+	"cloud.google.com/go/compute/metadata"
 	"github.com/chainguard-dev/clog"
 	_ "github.com/chainguard-dev/clog/gcp/init"
 	_ "github.com/glebarez/go-sqlite"
 )
 
-var dbfile = flag.String("file", "/data/db.sqlite", "path to database file")
+var dbfile = flag.String("file", "db.sqlite", "path to database file")
 
 func main() {
 	flag.Parse()
 
-	if _, err := os.Stat(*dbfile); errors.Is(err, os.ErrNotExist) {
-		if os.Getenv("BUCKET") != "" {
-			// Before serving requests, restore the database from the latest replica.
-			start := time.Now()
-			cmd := exec.Command("litestream", "restore",
-				"-o", *dbfile,
-				fmt.Sprintf("gcs://%s/litestream", os.Getenv("BUCKET")))
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				clog.Fatalf("failed to restore database: %v", err)
-			}
-			clog.Infof("restoring database took %s", time.Since(start))
-		} else {
-			clog.Infof("creating database file: %s", *dbfile)
-			if _, err := os.Create(*dbfile); err != nil {
+	dbfile := *dbfile
+
+	if metadata.OnGCE() {
+		if os.Getenv("BUCKET") == "" {
+			clog.Fatal("BUCKET environment variable is required on GCE")
+		}
+		dbfile = "/data/" + dbfile
+		// Before serving requests, restore the database from the latest replica.
+		start := time.Now()
+		cmd := exec.Command("litestream", "restore",
+			"-o", dbfile,
+			fmt.Sprintf("gcs://%s/litestream", os.Getenv("BUCKET")))
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			clog.Fatalf("failed to restore database: %v", err)
+		}
+		clog.Infof("restoring database took %s", time.Since(start))
+	} else {
+		if _, err := os.Stat(dbfile); os.IsNotExist(err) {
+			clog.Infof("creating database file: %s", dbfile)
+			if _, err := os.Create(dbfile); err != nil {
 				clog.Fatalf("failed to create database file: %v", err)
 			}
 		}
 	}
 
-	fi, err := os.Stat(*dbfile)
+	fi, err := os.Stat(dbfile)
 	if err != nil {
 		clog.Fatalf("failed to stat database: %v", err)
 	}
 	clog.Infof("database size: %d bytes", fi.Size())
 
-	db, err := sql.Open("sqlite", *dbfile)
+	db, err := sql.Open("sqlite", dbfile)
 	if err != nil {
 		clog.Fatalf("failed to open database: %v", err)
 	}
@@ -65,7 +71,7 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		data, err := getData(db)
+		data, err := getData(db, true)
 		if err != nil {
 			clog.Fatalf("failed to get data: %v", err)
 		}
@@ -78,7 +84,7 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		data, err := getData(db)
+		data, err := getData(db, false)
 		if err != nil {
 			clog.Fatalf("failed to get data: %v", err)
 		}
@@ -89,11 +95,13 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func getData(db *sql.DB) (data, error) {
-	row := db.QueryRow("select sqlite_version()")
+func getData(db *sql.DB, getVersion bool) (data, error) {
 	var version string
-	if err := row.Scan(&version); err != nil {
-		return data{}, fmt.Errorf("failed to query database version: %w", err)
+	if getVersion {
+		row := db.QueryRow("select sqlite_version()")
+		if err := row.Scan(&version); err != nil {
+			return data{}, fmt.Errorf("failed to query database version: %w", err)
+		}
 	}
 
 	if _, err := db.Exec("insert into test3 (time) values (unixepoch('now','subsec'))"); err != nil {
@@ -128,8 +136,8 @@ var (
 </head>
 <body>
   <h1>litestream</h1>
+  <p>sqlite version: {{.Version}}</p>
   <div id="data" hx-swap="outerHTML">
-	<p>sqlite version: {{.Version}}</p>
 	<p>count: {{.Count}}</p>
 	<button hx-post="/click" hx-trigger="click" hx-target="#data">Refresh</button>
   </div>
@@ -139,7 +147,6 @@ var (
 
 	div = template.Must(template.New("").Parse(`
 <div id="data" hx-swap="outerHTML">
-  <p>sqlite version: {{.Version}}</p>
   <p>count: {{.Count}}</p>
   <button hx-post="/click" hx-trigger="click" hx-target="#data">Refresh</button>
 </div>
