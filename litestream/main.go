@@ -1,15 +1,15 @@
 package main
 
 import (
-	"context"
 	"database/sql"
+	"errors"
+	"flag"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"time"
 
 	"github.com/chainguard-dev/clog"
@@ -17,29 +17,39 @@ import (
 	_ "github.com/glebarez/go-sqlite"
 )
 
-func main() {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
+var dbfile = flag.String("file", "/data/db.sqlite", "path to database file")
 
-	// Before serving requests, restore the database from the latest replica.
-	start := time.Now()
-	cmd := exec.CommandContext(ctx,
-		"litestream", "restore",
-		"-o", "/data/db.sqlite",
-		fmt.Sprintf("gcs://%s/litestream", os.Getenv("BUCKET")))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		clog.Fatalf("failed to restore database: %v", err)
+func main() {
+	flag.Parse()
+
+	if _, err := os.Stat(*dbfile); errors.Is(err, os.ErrNotExist) {
+		if os.Getenv("BUCKET") != "" {
+			// Before serving requests, restore the database from the latest replica.
+			start := time.Now()
+			cmd := exec.Command("litestream", "restore",
+				"-o", *dbfile,
+				fmt.Sprintf("gcs://%s/litestream", os.Getenv("BUCKET")))
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				clog.Fatalf("failed to restore database: %v", err)
+			}
+			clog.Infof("restoring database took %s", time.Since(start))
+		} else {
+			clog.Infof("creating database file: %s", *dbfile)
+			if _, err := os.Create(*dbfile); err != nil {
+				clog.Fatalf("failed to create database file: %v", err)
+			}
+		}
 	}
-	clog.Infof("restoring database took %s", time.Since(start))
-	fi, err := os.Stat("/data/db.sqlite")
+
+	fi, err := os.Stat(*dbfile)
 	if err != nil {
 		clog.Fatalf("failed to stat database: %v", err)
 	}
 	clog.Infof("database size: %d bytes", fi.Size())
 
-	db, err := sql.Open("sqlite", "/data/db.sqlite")
+	db, err := sql.Open("sqlite", *dbfile)
 	if err != nil {
 		clog.Fatalf("failed to open database: %v", err)
 	}
@@ -51,6 +61,10 @@ func main() {
 
 	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no favicon", http.StatusNotFound) })
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		data, err := getData(db)
 		if err != nil {
 			clog.Fatalf("failed to get data: %v", err)
@@ -60,6 +74,10 @@ func main() {
 		}
 	})
 	http.HandleFunc("/click", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		data, err := getData(db)
 		if err != nil {
 			clog.Fatalf("failed to get data: %v", err)
@@ -109,22 +127,21 @@ var (
   <script src="https://unpkg.com/htmx.org@2.0.0" integrity="sha384-wS5l5IKJBvK6sPTKa2WZ1js3d947pvWXbPJ1OmWfEuxLgeHcEbjUUA5i9V5ZkpCw" crossorigin="anonymous"></script>
 </head>
 <body>
-  <div id="data" hx-swap="outerHTML" hx-get="/">
-	<h1>litestream</h1>
+  <h1>litestream</h1>
+  <div id="data" hx-swap="outerHTML">
 	<p>sqlite version: {{.Version}}</p>
 	<p>count: {{.Count}}</p>
-	<button hx-post="/click" hx-trigger="click" hx-target="data">Refresh</button>
+	<button hx-post="/click" hx-trigger="click" hx-target="#data">Refresh</button>
   </div>
 </body>
 </html>
 `))
 
 	div = template.Must(template.New("").Parse(`
-<div id="data" hx-swap="outerHTML" hx-get="/">
-  <h1>litestream</h1>
+<div id="data" hx-swap="outerHTML">
   <p>sqlite version: {{.Version}}</p>
   <p>count: {{.Count}}</p>
-  <button hx-post="/click" hx-trigger="click" hx-target="data">Refresh</button>
+  <button hx-post="/click" hx-trigger="click" hx-target="#data">Refresh</button>
 </div>
 `))
 )
