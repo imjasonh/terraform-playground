@@ -1,0 +1,5 @@
+{
+    "name": "wolfi-devcontainer",
+    "image": "ttl.sh/jason@sha256:6dd97e8b79b814055ff9f5ee7390af8db2e9a62f0a78881a2a0965d116606465",
+    "remoteUser": "nonroot"
+}
