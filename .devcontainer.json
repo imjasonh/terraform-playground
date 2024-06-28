@@ -2,5 +2,5 @@
     "name": "wolfi-devcontainer",
     "image": "ttl.sh/jason@sha256:f2debfb35c0fe06da64734415a43eed8388b04a50a1999d02a0e023a2899dfb8",
     "remoteUser": "user",
-    "postCreateCommand": "/sbin/ldconfig"
+    "postCreateCommand": "touch /tmp/vscode-skip-server-requirements-check; /sbin/ldconfig"
 }
