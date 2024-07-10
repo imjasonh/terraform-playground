@@ -1,8 +1,9 @@
 terraform {
   required_providers {
-    google = { source = "hashicorp/google" }
-    ko     = { source = "ko-build/ko" }
-    apko   = { source = "chainguard-dev/apko" }
+    google     = { source = "hashicorp/google" }
+    ko         = { source = "ko-build/ko" }
+    apko       = { source = "chainguard-dev/apko" }
+    chainguard = { source = "chainguard-dev/chainguard" }
   }
 }
 
@@ -38,15 +39,10 @@ resource "google_service_account" "sa" {
   display_name = local.name
 }
 
-resource "ko_build" "app" {
-  importpath = "github.com/jonjohnsonjr/dagdotdev/cmd/oci"
-  base_image = module.base.image_ref
-}
-
-module "base" {
+module "dagdotdev" {
   source = "chainguard-dev/apko/publisher"
 
-  target_repository = "gcr.io/jason-chainguard/iap/base"
+  target_repository = "gcr.io/jason-chainguard/iap"
   check_sbom        = false
   config = jsonencode({
     environment = {
@@ -64,10 +60,12 @@ module "base" {
       packages = [
         "wolfi-baselayout",
         "chainctl",
-        //"docker-credential-cgr",
+        "docker-credential-cgr",
+        "dagdotdev",
       ]
     }
     archs = ["amd64"]
+    cmd   = "/usr/bin/dagdotdev oci"
   })
 }
 
@@ -79,21 +77,64 @@ module "service" {
   regions    = module.networking.regional-networks
 
   ingress = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" // Only accessible via GCLB.
-  egress  = "ALL_TRAFFIC"                            // Shouldn't send external traffic.
+  egress  = "PRIVATE_RANGES_ONLY"                    // Talks to the internet.
 
   service_account = google_service_account.sa.email
 
   containers = {
     "${local.name}" = {
-      image = ko_build.app.image_ref
+      image = module.dagdotdev.image_ref
       ports = [{ container_port = 8080 }]
       environment = {
-        //IDENTITY_UID = chainguard_identity.identity.uid
-        AUTH = "keychain"
+        IDENTITY_UID = chainguard_identity.identity.id
+        AUTH         = "keychain"
+        CACHE_BUCKET = "/gcs"
       }
+      volume_mounts = [{
+        name       = "gcs"
+        mount_path = "/gcs"
+      }]
     }
   }
+
+  volumes = [{
+    name = "gcs"
+    gcs = {
+      bucket    = google_storage_bucket.bucket.name
+      read_only = false
+    }
+  }]
+
   notification_channels = []
+}
+
+resource "google_storage_bucket" "bucket" {
+  name     = "jason-dagdotdev"
+  location = local.region
+}
+
+resource "google_storage_bucket_iam_member" "bucket" {
+  bucket = google_storage_bucket.bucket.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.sa.email}"
+}
+
+resource "chainguard_identity" "identity" {
+  parent_id = data.chainguard_group.group.id
+  name      = "iap dag.dev"
+  claim_match {
+    issuer  = "https://accounts.google.com"
+    subject = google_service_account.sa.email
+  }
+}
+
+data "chainguard_group" "group" { name = "imjasonh.dev" }
+data "chainguard_role" "puller" { name = "registry.pull" }
+
+resource "chainguard_rolebinding" "puller" {
+  group    = data.chainguard_group.group.id
+  role     = data.chainguard_role.puller.items[0].id
+  identity = chainguard_identity.identity.id
 }
 
 output "url" {
