@@ -2,6 +2,7 @@ terraform {
   required_providers {
     google = { source = "hashicorp/google" }
     ko     = { source = "ko-build/ko" }
+    apko   = { source = "chainguard-dev/apko" }
   }
 }
 
@@ -37,8 +38,41 @@ resource "google_service_account" "sa" {
   display_name = local.name
 }
 
+resource "ko_build" "app" {
+  importpath = "github.com/jonjohnsonjr/dagdotdev/cmd/oci"
+  base_image = module.base.image_ref
+}
+
+module "base" {
+  source = "chainguard-dev/apko/publisher"
+
+  target_repository = "gcr.io/jason-chainguard/iap/base"
+  check_sbom        = false
+  config = jsonencode({
+    environment = {
+      DOCKER_CONFIG = "/docker"
+    }
+    contents = {
+      repositories = [
+        "https://packages.wolfi.dev/os",
+        "https://packages.cgr.dev/extras",
+      ]
+      keyring = [
+        "https://packages.wolfi.dev/os/wolfi-signing.rsa.pub",
+        "https://packages.cgr.dev/extras/chainguard-extras.rsa.pub",
+      ]
+      packages = [
+        "wolfi-baselayout",
+        "chainctl",
+        //"docker-credential-cgr",
+      ]
+    }
+    archs = ["amd64"]
+  })
+}
+
 module "service" {
-  source = "chainguard-dev/common/infra//modules/regional-go-service"
+  source = "chainguard-dev/common/infra//modules/regional-service"
 
   project_id = local.project
   name       = local.name
@@ -51,11 +85,12 @@ module "service" {
 
   containers = {
     "${local.name}" = {
-      source = {
-        working_dir = path.module
-        importpath  = "./"
-      }
+      image = ko_build.app.image_ref
       ports = [{ container_port = 8080 }]
+      environment = {
+        //IDENTITY_UID = chainguard_identity.identity.uid
+        AUTH = "keychain"
+      }
     }
   }
   notification_channels = []
