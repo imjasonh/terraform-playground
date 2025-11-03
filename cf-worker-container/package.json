@@ -1,0 +1,6 @@
+{
+  "devDependencies": {
+    "@cloudflare/containers": "^0.0.30",
+    "wrangler": "^4.45.3"
+  }
+}

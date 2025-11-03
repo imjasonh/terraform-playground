@@ -1,0 +1,20 @@
+name = "my-container-service"
+main = "index.js"
+account_id = "TODO" # Set this
+compatibility_date = "2025-10-08"
+
+[observability]
+enabled = true
+
+[[containers]]
+class_name = "MyContainer"
+image = "./Dockerfile"
+max_instances = 10
+
+[[durable_objects.bindings]]
+class_name = "MyContainer"
+name = "MY_CONTAINER"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MyContainer"]
