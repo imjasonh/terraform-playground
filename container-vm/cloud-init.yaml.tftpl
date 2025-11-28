@@ -34,7 +34,7 @@ write_files:
         %{ endfor ~}
         ${container_image} \
         %{ if container_command != "" ~}
-        ${container_command} \
+        "${container_command}" \
         %{ endif ~}
         %{ if container_args != "" ~}
         ${container_args} \
