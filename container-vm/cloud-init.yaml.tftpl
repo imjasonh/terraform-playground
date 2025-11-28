@@ -33,6 +33,9 @@ write_files:
 %{ if enable_logging ~}
         --log-driver=gcplogs \
         --log-opt gcp-project=${project_id} \
+        --log-opt gcp-log-cmd=true \
+        --log-opt gcp-meta-zone=true \
+        --log-opt gcp-meta-name=true \
         --log-opt labels=container_name \
         --label container_name=${name} \
 %{ endif ~}

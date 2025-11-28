@@ -44,9 +44,9 @@ resource "google_compute_instance_template" "container_vm_template" {
   # Metadata for cloud-init and observability
   metadata = {
     user-data                  = local.rendered_cloud_init
-    google-logging-enabled     = var.enable_logging
-    google-monitoring-enabled  = var.enable_monitoring
-    cos-metrics-enabled        = var.enable_cos_metrics
+    google-logging-enabled     = tostring(var.enable_logging)
+    google-monitoring-enabled  = tostring(var.enable_monitoring)
+    cos-metrics-enabled        = tostring(var.enable_cos_metrics)
   }
 
   scheduling {
