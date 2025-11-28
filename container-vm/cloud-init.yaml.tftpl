@@ -38,6 +38,8 @@ write_files:
         %{ endif ~}
         %{ if length(container_args) > 0 ~}
         %{ for arg in container_args ~}
+        # Escape single quotes in arguments by ending the quoted string, inserting an escaped quote, and resuming the quoted string.
+        # This pattern: replace(arg, "'", "'\\''") is standard for safely passing single quotes in shell.
         '${replace(arg, "'", "'\\''")}' \
         %{ endfor ~}
         %{ endif ~}
