@@ -31,13 +31,10 @@ resource "google_compute_instance_template" "container_vm_template" {
     boot         = true
   }
 
-  # Network configuration
+  # Network configuration (private VM - no external IP)
   network_interface {
-    network    = "default" 
-    subnetwork = null      
-    
-    # Assign an external IP address (access_config is required for external IP)
-    access_config {}
+    network    = var.network
+    subnetwork = var.subnetwork
   }
 
   # Service Account configuration (needed for Google Cloud API access, including image pulls)
