@@ -21,7 +21,7 @@ resource "google_compute_instance_template" "container_vm_template" {
   machine_type = var.machine_type
   region       = var.region
   labels       = var.labels
-  
+
   # Disk configuration using the fetched OS image
   disk {
     source_image = data.google_compute_image.source_image.self_link
@@ -43,10 +43,10 @@ resource "google_compute_instance_template" "container_vm_template" {
 
   # Metadata for cloud-init and observability
   metadata = {
-    user-data                  = local.rendered_cloud_init
-    google-logging-enabled     = tostring(var.enable_logging)
-    google-monitoring-enabled  = tostring(var.enable_monitoring)
-    cos-metrics-enabled        = tostring(var.enable_cos_metrics)
+    user-data                 = local.rendered_cloud_init
+    google-logging-enabled    = tostring(var.enable_logging)
+    google-monitoring-enabled = tostring(var.enable_monitoring)
+    cos-metrics-enabled       = tostring(var.enable_cos_metrics)
   }
 
   scheduling {

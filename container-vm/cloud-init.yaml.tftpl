@@ -18,11 +18,20 @@ write_files:
       # Crucial for persistence: ensure the service restarts on exit.
       Restart=${container.restart_policy}
       RestartSec=5s
-      
+
+      # Set HOME to writable location for docker credential helper
+      Environment="HOME=/home/cloudservice"
+      Environment="DOCKER_CONFIG=/home/cloudservice/.docker"
+
       # Stop and remove any pre-existing container with the same name.
-      ExecStartPre=/usr/bin/docker stop ${name} || true
-      ExecStartPre=/usr/bin/docker rm ${name} || true
-      
+      # The minus sign prefix means failure is tolerated
+      ExecStartPre=-/usr/bin/docker stop ${name}
+      ExecStartPre=-/usr/bin/docker rm ${name}
+
+      # Configure docker credential helper for Artifact Registry
+      # TODO(jason): Set this for each requested registry region.
+      ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries=us-east4-docker.pkg.dev
+
       # Pull the image before starting.
       ExecStartPre=/usr/bin/docker pull ${container.image}
       
@@ -61,6 +70,8 @@ write_files:
 %{ endfor ~}
 
 runcmd:
+  # Configure docker-credential-gcr for Artifact Registry authentication
+  - docker-credential-gcr configure-docker
   # Reload the systemd configuration to recognize the new service files.
   - systemctl daemon-reload
 %{ for name, container in containers ~}

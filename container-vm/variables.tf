@@ -6,7 +6,6 @@ variable "project_id" {
 variable "region" {
   description = "The region where the compute template is created."
   type        = string
-  default     = "us-central1"
 }
 
 variable "machine_type" {
