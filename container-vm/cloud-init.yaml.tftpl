@@ -1,0 +1,56 @@
+#cloud-config
+# This cloud-init configuration defines a systemd service to run the Docker container
+# on Container-Optimized OS (COS).
+
+write_files:
+  - path: /etc/systemd/system/${container_name}.service
+    permissions: 0644
+    owner: root
+    content: |
+      [Unit]
+      Description=Containerized application: ${container_name}
+      # Wait for the Docker socket to be ready
+      Wants=docker.socket
+      After=docker.service
+      
+      [Service]
+      # Crucial for persistence: ensure the service restarts on exit.
+      Restart=${restart_policy}
+      RestartSec=5s
+      
+      # Stop and remove any pre-existing container with the same name.
+      ExecStartPre=/usr/bin/docker stop ${container_name} || true
+      ExecStartPre=/usr/bin/docker rm ${container_name} || true
+      
+      # Pull the latest version of the image before starting.
+      ExecStartPre=/usr/bin/docker pull ${container_image}
+      
+      # The main execution command: docker run.
+      # We use 'docker run --rm' to ensure clean removal after failure/stop.
+      ExecStart=/usr/bin/docker run --rm \
+        --name ${container_name} \
+        %{ for key, value in container_env ~}
+        -e ${key}=${value} \
+        %{ endfor ~}
+        ${container_image} \
+        %{ if container_command != "" ~}
+        ${container_command} \
+        %{ endif ~}
+        %{ if container_args != "" ~}
+        ${container_args} \
+        %{ endif ~}
+      
+      # ExecStop is called when the service is stopped manually.
+      ExecStop=/usr/bin/docker stop ${container_name}
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # Reload the systemd configuration to recognize the new service file.
+  - systemctl daemon-reload
+  # Enable the service to start automatically on subsequent boots.
+  - systemctl enable ${container_name}.service
+  # Start the service immediately.
+  - systemctl start ${container_name}.service
+
