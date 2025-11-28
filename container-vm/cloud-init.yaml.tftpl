@@ -1,6 +1,6 @@
 #cloud-config
 # This cloud-init configuration defines systemd services to run Docker containers
-# on Container-Optimized OS (COS).
+# on Container-Optimized OS (COS) with full observability support.
 
 write_files:
 %{ for name, container in containers ~}
@@ -27,8 +27,15 @@ write_files:
       ExecStartPre=/usr/bin/docker pull ${container.image}
       
       # The main execution command: docker run.
+      # When logging is enabled, use the gcplogs driver to send container logs to Cloud Logging.
       ExecStart=/usr/bin/docker run \
         --name ${name} \
+%{ if enable_logging ~}
+        --log-driver=gcplogs \
+        --log-opt gcp-project=${project_id} \
+        --log-opt labels=container_name \
+        --label container_name=${name} \
+%{ endif ~}
 %{ for e in container.env ~}
         -e ${e.name}="${e.value}" \
 %{ endfor ~}
