@@ -1,60 +1,60 @@
 #cloud-config
-# This cloud-init configuration defines a systemd service to run the Docker container
+# This cloud-init configuration defines systemd services to run Docker containers
 # on Container-Optimized OS (COS).
 
 write_files:
-  - path: /etc/systemd/system/${container_name}.service
+%{ for name, container in containers ~}
+  - path: /etc/systemd/system/${name}.service
     permissions: 0644
     owner: root
     content: |
       [Unit]
-      Description=Containerized application: ${container_name}
+      Description=Containerized application: ${name}
       # Wait for the Docker socket to be ready
       Wants=docker.socket
       After=docker.service
       
       [Service]
       # Crucial for persistence: ensure the service restarts on exit.
-      Restart=${restart_policy}
+      Restart=${container.restart_policy}
       RestartSec=5s
       
       # Stop and remove any pre-existing container with the same name.
-      ExecStartPre=/usr/bin/docker stop ${container_name} || true
-      ExecStartPre=/usr/bin/docker rm ${container_name} || true
+      ExecStartPre=/usr/bin/docker stop ${name} || true
+      ExecStartPre=/usr/bin/docker rm ${name} || true
       
-      # Pull the latest version of the image before starting.
-      ExecStartPre=/usr/bin/docker pull ${container_image}
+      # Pull the image before starting.
+      ExecStartPre=/usr/bin/docker pull ${container.image}
       
       # The main execution command: docker run.
-      # We use 'docker run --rm' to ensure clean removal after failure/stop.
       ExecStart=/usr/bin/docker run \
-        --name ${container_name} \
-        %{ for key, value in container_env ~}
-        -e ${key}="${value}" \
-        %{ endfor ~}
-        ${container_image} \
-        %{ if container_command != "" ~}
-        "${container_command}" \
-        %{ endif ~}
-        %{ if length(container_args) > 0 ~}
-        %{ for arg in container_args ~}
-        # Escape single quotes in arguments by ending the quoted string, inserting an escaped quote, and resuming the quoted string.
-        # This pattern: replace(arg, "'", "'\\''") is standard for safely passing single quotes in shell.
+        --name ${name} \
+%{ for e in container.env ~}
+        -e ${e.name}="${e.value}" \
+%{ endfor ~}
+        ${container.image} \
+%{ if container.command != "" ~}
+        "${container.command}" \
+%{ endif ~}
+%{ for arg in container.args ~}
         '${replace(arg, "'", "'\\''")}' \
-        %{ endfor ~}
-        %{ endif ~}
+%{ endfor ~}
+
       
       # ExecStop is called when the service is stopped manually.
-      ExecStop=/usr/bin/docker stop ${container_name}
+      ExecStop=/usr/bin/docker stop ${name}
 
       [Install]
       WantedBy=multi-user.target
 
+%{ endfor ~}
+
 runcmd:
-  # Reload the systemd configuration to recognize the new service file.
+  # Reload the systemd configuration to recognize the new service files.
   - systemctl daemon-reload
-  # Enable the service to start automatically on subsequent boots.
-  - systemctl enable ${container_name}.service
-  # Start the service immediately.
-  - systemctl start ${container_name}.service
+%{ for name, container in containers ~}
+  # Enable and start ${name} service.
+  - systemctl enable ${name}.service
+  - systemctl start ${name}.service
+%{ endfor ~}
 

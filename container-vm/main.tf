@@ -7,12 +7,7 @@ data "google_compute_image" "source_image" {
 # Render the cloud-init YAML template using dynamic module inputs
 locals {
   rendered_cloud_init = templatefile("${path.module}/cloud-init.yaml.tftpl", {
-    container_name    = var.container_name,
-    container_image   = var.container_image,
-    restart_policy    = var.restart_policy,
-    container_env     = var.container_env,
-    container_command = var.container_command,
-    container_args    = var.container_args,
+    containers = var.containers,
   })
 }
 
