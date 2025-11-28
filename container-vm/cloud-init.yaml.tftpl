@@ -1,0 +1,71 @@
+#cloud-config
+# This cloud-init configuration defines systemd services to run Docker containers
+# on Container-Optimized OS (COS) with full observability support.
+
+write_files:
+%{ for name, container in containers ~}
+  - path: /etc/systemd/system/${name}.service
+    permissions: 0644
+    owner: root
+    content: |
+      [Unit]
+      Description=Containerized application: ${name}
+      # Wait for the Docker socket to be ready
+      Wants=docker.socket
+      After=docker.service
+      
+      [Service]
+      # Crucial for persistence: ensure the service restarts on exit.
+      Restart=${container.restart_policy}
+      RestartSec=5s
+      
+      # Stop and remove any pre-existing container with the same name.
+      ExecStartPre=/usr/bin/docker stop ${name} || true
+      ExecStartPre=/usr/bin/docker rm ${name} || true
+      
+      # Pull the image before starting.
+      ExecStartPre=/usr/bin/docker pull ${container.image}
+      
+      # The main execution command: docker run.
+      # When logging is enabled, use the gcplogs driver to send container logs to Cloud Logging.
+      ExecStart=/usr/bin/docker run \
+        --name ${name} \
+%{ if enable_logging ~}
+        --log-driver=gcplogs \
+        --log-opt gcp-project=${project_id} \
+        --log-opt gcp-log-cmd=true \
+        --log-opt gcp-meta-zone=true \
+        --log-opt gcp-meta-name=true \
+        --log-opt labels=container_name \
+        --label container_name=${name} \
+%{ endif ~}
+%{ for e in container.env ~}
+        -e ${e.name}="${e.value}" \
+%{ endfor ~}
+        ${container.image} \
+%{ if container.command != "" ~}
+        "${container.command}" \
+%{ endif ~}
+%{ for arg in container.args ~}
+        # Escape single quotes: end quoted string, add escaped quote, resume quoted string
+        '${replace(arg, "'", "'\\''")}' \
+%{ endfor ~}
+
+      
+      # ExecStop is called when the service is stopped manually.
+      ExecStop=/usr/bin/docker stop ${name}
+
+      [Install]
+      WantedBy=multi-user.target
+
+%{ endfor ~}
+
+runcmd:
+  # Reload the systemd configuration to recognize the new service files.
+  - systemctl daemon-reload
+%{ for name, container in containers ~}
+  # Enable and start ${name} service.
+  - systemctl enable ${name}.service
+  - systemctl start ${name}.service
+%{ endfor ~}
+
