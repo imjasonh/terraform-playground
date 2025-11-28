@@ -37,6 +37,7 @@ write_files:
         "${container.command}" \
 %{ endif ~}
 %{ for arg in container.args ~}
+        # Escape single quotes: end quoted string, add escaped quote, resume quoted string
         '${replace(arg, "'", "'\\''")}' \
 %{ endfor ~}
 
