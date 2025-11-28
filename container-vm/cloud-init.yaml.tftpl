@@ -36,8 +36,10 @@ write_files:
         %{ if container_command != "" ~}
         "${container_command}" \
         %{ endif ~}
-        %{ if container_args != "" ~}
-        ${container_args} \
+        %{ if length(container_args) > 0 ~}
+        %{ for arg in container_args ~}
+        '${replace(arg, "'", "'\\''")}' \
+        %{ endfor ~}
         %{ endif ~}
       
       # ExecStop is called when the service is stopped manually.
