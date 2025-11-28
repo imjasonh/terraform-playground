@@ -30,7 +30,7 @@ write_files:
       ExecStart=/usr/bin/docker run --rm \
         --name ${container_name} \
         %{ for key, value in container_env ~}
-        -e ${key}=${value} \
+        -e ${key}="${value}" \
         %{ endfor ~}
         ${container_image} \
         %{ if container_command != "" ~}
