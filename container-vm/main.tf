@@ -7,7 +7,9 @@ data "google_compute_image" "source_image" {
 # Render the cloud-init YAML template using dynamic module inputs
 locals {
   rendered_cloud_init = templatefile("${path.module}/cloud-init.yaml.tftpl", {
-    containers = var.containers,
+    containers     = var.containers,
+    enable_logging = var.enable_logging,
+    project_id     = var.project_id,
   })
 }
 
@@ -18,6 +20,7 @@ resource "google_compute_instance_template" "container_vm_template" {
   description  = "Runs a container using Docker, managed by a systemd unit via cloud-init."
   machine_type = var.machine_type
   region       = var.region
+  labels       = var.labels
   
   # Disk configuration using the fetched OS image
   disk {
@@ -38,14 +41,24 @@ resource "google_compute_instance_template" "container_vm_template" {
     scopes = ["cloud-platform"]
   }
 
-  # Critical step: inject the cloud-init script via the 'user-data' metadata key.
+  # Metadata for cloud-init and observability
   metadata = {
-    user-data = local.rendered_cloud_init
+    user-data                  = local.rendered_cloud_init
+    google-logging-enabled     = tostring(var.enable_logging)
+    google-monitoring-enabled  = tostring(var.enable_monitoring)
+    cos-metrics-enabled        = tostring(var.enable_cos_metrics)
   }
 
   scheduling {
     automatic_restart   = true
     on_host_maintenance = "MIGRATE"
+  }
+
+  # Enable shielded VM features for security
+  shielded_instance_config {
+    enable_secure_boot          = true
+    enable_vtpm                 = true
+    enable_integrity_monitoring = true
   }
 }
 

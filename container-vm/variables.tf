@@ -67,3 +67,28 @@ variable "subnetwork" {
   type        = string
 }
 
+# Observability variables
+variable "enable_logging" {
+  description = "Enable Cloud Logging for the VM and containers. When true, container logs are sent to Cloud Logging using the gcplogs driver."
+  type        = bool
+  default     = true
+}
+
+variable "enable_monitoring" {
+  description = "Enable Cloud Monitoring for the VM. When true, VM metrics are collected and sent to Cloud Monitoring."
+  type        = bool
+  default     = true
+}
+
+variable "enable_cos_metrics" {
+  description = "Enable Container-Optimized OS metrics collection for additional container and system metrics."
+  type        = bool
+  default     = true
+}
+
+variable "labels" {
+  description = "Labels to apply to the instance template for organization and filtering in Cloud Monitoring and Logging."
+  type        = map(string)
+  default     = {}
+}
+
