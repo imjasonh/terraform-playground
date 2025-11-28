@@ -46,8 +46,8 @@ variable "container_command" {
 
 variable "container_args" {
   description = "Optional arguments to pass to the container command."
-  type        = string
-  default     = ""
+  type        = list(string)
+  default     = []
 }
 
 # Defaulting to COS, which has Docker/containerd pre-installed.
