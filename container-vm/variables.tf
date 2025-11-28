@@ -16,8 +16,13 @@ variable "machine_type" {
 }
 
 variable "container_image" {
-  description = "The container image to run (e.g., 'nginx:latest' or 'gcr.io/my-project/my-app:v1')."
+  description = "The container image to run, must be referenced by digest (e.g., 'gcr.io/my-project/my-app@sha256:abc123...')."
   type        = string
+
+  validation {
+    condition     = can(regex("^.+@sha256:[a-f0-9]{64}$", var.container_image))
+    error_message = "The container_image must be referenced by digest (e.g., 'gcr.io/my-project/my-app@sha256:<64 hex chars>')."
+  }
 }
 
 variable "container_name" {
@@ -48,6 +53,11 @@ variable "container_args" {
   description = "Optional arguments to pass to the container command."
   type        = list(string)
   default     = []
+}
+
+variable "service_account_email" {
+  description = "The email of the service account to use for the VM. Must be created outside this module."
+  type        = string
 }
 
 # Defaulting to COS, which has Docker/containerd pre-installed.

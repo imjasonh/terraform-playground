@@ -42,7 +42,7 @@ resource "google_compute_instance_template" "container_vm_template" {
 
   # Service Account configuration (needed for Google Cloud API access, including image pulls)
   service_account {
-    email  = "default" # Use the project's default compute service account
+    email  = var.service_account_email
     scopes = ["cloud-platform"]
   }
 
