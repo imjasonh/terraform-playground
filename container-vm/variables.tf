@@ -73,3 +73,13 @@ variable "source_image_project" {
   default     = "cos-cloud"
 }
 
+variable "network" {
+  description = "The VPC network to attach the VM to (e.g., 'projects/PROJECT/global/networks/NETWORK' or 'NETWORK')."
+  type        = string
+}
+
+variable "subnetwork" {
+  description = "The subnetwork to attach the VM to (e.g., 'projects/PROJECT/regions/REGION/subnetworks/SUBNET' or 'SUBNET')."
+  type        = string
+}
+
