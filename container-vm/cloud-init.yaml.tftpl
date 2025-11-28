@@ -27,7 +27,7 @@ write_files:
       
       # The main execution command: docker run.
       # We use 'docker run --rm' to ensure clean removal after failure/stop.
-      ExecStart=/usr/bin/docker run --rm \
+      ExecStart=/usr/bin/docker run \
         --name ${container_name} \
         %{ for key, value in container_env ~}
         -e ${key}="${value}" \
