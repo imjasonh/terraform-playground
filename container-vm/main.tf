@@ -10,6 +10,7 @@ locals {
     containers     = var.containers,
     enable_logging = var.enable_logging,
     project_id     = var.project_id,
+    region         = var.region,
   })
 }
 

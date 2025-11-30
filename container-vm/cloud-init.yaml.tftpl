@@ -29,8 +29,7 @@ write_files:
       ExecStartPre=-/usr/bin/docker rm ${name}
 
       # Configure docker credential helper for Artifact Registry
-      # TODO(jason): Set this for each requested registry region.
-      ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries=us-east4-docker.pkg.dev
+      ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries=${region}-docker.pkg.dev
 
       # Pull the image before starting.
       ExecStartPre=/usr/bin/docker pull ${container.image}

@@ -36,4 +36,6 @@ module "container_vm" {
     }
   }
 }
+
+// Next, create VM instances from this template, route traffic to them via GCLB, etc.
 ```
