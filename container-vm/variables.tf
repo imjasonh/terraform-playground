@@ -24,6 +24,7 @@ variable "containers" {
       name  = string
       value = string
     })), [])
+    ports          = optional(list(string), [])
     restart_policy = optional(string, "always")
   }))
 

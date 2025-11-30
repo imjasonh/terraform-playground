@@ -48,6 +48,9 @@ write_files:
         --log-opt labels=container_name \
         --label container_name=${name} \
 %{ endif ~}
+%{ for port in container.ports ~}
+        -p ${port} \
+%{ endfor ~}
 %{ for e in container.env ~}
         -e ${e.name}="${e.value}" \
 %{ endfor ~}
