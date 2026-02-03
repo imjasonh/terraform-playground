@@ -7,17 +7,48 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 
+	"chainguard.dev/driftlessaf/reconcilers/githubreconciler"
+	"chainguard.dev/driftlessaf/reconcilers/githubreconciler/statusmanager"
+	"chainguard.dev/driftlessaf/workqueue"
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/chainguard-dev/clog"
 	_ "github.com/chainguard-dev/clog/gcp/init"
 	"github.com/chainguard-dev/terraform-infra-common/pkg/httpmetrics"
-	"github.com/chainguard-dev/terraform-infra-common/pkg/workqueue"
-	"github.com/google/go-github/v68/github"
+	"github.com/google/go-github/v75/github"
 	"github.com/sethvargo/go-envconfig"
 	"google.golang.org/grpc"
+
+	"github.com/imjasonh/terraform-playground/driftlessaf/internal/autolabeler"
 )
+
+const reconcilerIdentity = "pr-auto-labeler"
+
+// AutoLabelDetails contains the state tracked by the status manager.
+type AutoLabelDetails struct {
+	LabelsApplied []string `json:"labelsApplied"`
+	FilesAnalyzed int      `json:"filesAnalyzed"`
+	TotalChanges  int      `json:"totalChanges"`
+}
+
+// Markdown renders the details for display in the GitHub Check Run.
+func (d AutoLabelDetails) Markdown() string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Analyzed **%d files** with **%d lines** changed.\n\n", d.FilesAnalyzed, d.TotalChanges))
+
+	if len(d.LabelsApplied) > 0 {
+		sb.WriteString("### Labels Applied\n\n")
+		for _, label := range d.LabelsApplied {
+			sb.WriteString(fmt.Sprintf("- `%s`\n", label))
+		}
+	} else {
+		sb.WriteString("_No labels matched the changed files._\n")
+	}
+
+	return sb.String()
+}
 
 type envConfig struct {
 	Port             int    `env:"PORT, default=8080"`
@@ -45,11 +76,19 @@ func main() {
 	}
 	appClient := github.NewClient(&http.Client{Transport: appTransport})
 
+	// Create status manager for tracking reconciliation state
+	statusMgr, err := statusmanager.NewStatusManager[AutoLabelDetails](ctx, reconcilerIdentity)
+	if err != nil {
+		log.Fatalf("failed to create status manager: %v", err)
+	}
+
 	reconciler := &PRReconciler{
 		appID:      cfg.GithubAppID,
 		privateKey: privateKey,
 		appClient:  appClient,
 		clients:    make(map[int64]*github.Client),
+		statusMgr:  statusMgr,
+		labeler:    autolabeler.NewWithDefaults(),
 	}
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
@@ -76,6 +115,8 @@ type PRReconciler struct {
 	appID      int64
 	privateKey []byte
 	appClient  *github.Client
+	statusMgr  *statusmanager.StatusManager[AutoLabelDetails]
+	labeler    *autolabeler.Labeler
 
 	mu      sync.RWMutex
 	clients map[int64]*github.Client
@@ -150,6 +191,7 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 	}
 
 	log = log.With("owner", owner, "repo", repo, "number", number)
+	ctx = clog.WithLogger(ctx, log)
 
 	gh, err := r.getClientForRepo(ctx, owner, repo)
 	if err != nil {
@@ -163,68 +205,101 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 		return nil, err
 	}
 
+	// Add SHA to logger context for Cloud Logging filtering
+	sha := pr.GetHead().GetSHA()
+	log = log.With("sha", sha)
+	ctx = clog.WithLogger(ctx, log)
+
+	// Skip closed PRs
+	if pr.GetState() != "open" {
+		log.Infof("skipping closed PR")
+		return &workqueue.ProcessResponse{}, nil
+	}
+
 	log.Infof("processing PR: title=%q state=%s author=%s",
 		pr.GetTitle(), pr.GetState(), pr.GetUser().GetLogin())
 
-	var labelNames []string
-	for _, label := range pr.Labels {
-		labelNames = append(labelNames, label.GetName())
+	// Create status manager session for this PR
+	resource := &githubreconciler.Resource{
+		Type:  githubreconciler.ResourceTypePullRequest,
+		Owner: owner,
+		Repo:  repo,
+		URL:   req.Key,
+		Ref:   pr.GetBase().GetRef(),
 	}
-	if len(labelNames) > 0 {
-		log.Infof("PR labels: %v", labelNames)
+	session := r.statusMgr.NewSession(gh, resource, sha)
+
+	// Check if we've already processed this SHA
+	existingStatus, err := session.ObservedState(ctx)
+	if err != nil {
+		log.Warnf("failed to get observed state: %v", err)
+		// Continue anyway - we'll create a new check run
 	}
 
-	reviews, _, err := gh.PullRequests.ListReviews(ctx, owner, repo, number, nil)
-	if err != nil {
-		log.Warnf("failed to fetch reviews: %v", err)
-	} else if len(reviews) > 0 {
-		for _, review := range reviews {
-			log.Infof("review: reviewer=%s state=%s", review.GetUser().GetLogin(), review.GetState())
-		}
+	if existingStatus != nil && existingStatus.ObservedGeneration == sha {
+		log.Infof("already processed, skipping")
+		return &workqueue.ProcessResponse{}, nil
 	}
 
-	combinedStatus, _, err := gh.Repositories.GetCombinedStatus(ctx, owner, repo, pr.GetHead().GetSHA(), nil)
-	if err != nil {
-		log.Warnf("failed to fetch combined status: %v", err)
-	} else {
-		log.Infof("combined status: state=%s count=%d", combinedStatus.GetState(), combinedStatus.GetTotalCount())
+	// Set in-progress status
+	if err := session.SetActualState(ctx, "Analyzing changed files...", &statusmanager.Status[AutoLabelDetails]{
+		Status: "in_progress",
+	}); err != nil {
+		log.Warnf("failed to set in-progress status: %v", err)
 	}
 
-	checkRuns, _, err := gh.Checks.ListCheckRunsForRef(ctx, owner, repo, pr.GetHead().GetSHA(), nil)
+	// Get changed files
+	files, _, err := gh.PullRequests.ListFiles(ctx, owner, repo, number, &github.ListOptions{PerPage: 100})
 	if err != nil {
-		log.Warnf("failed to fetch check runs: %v", err)
-	} else if len(checkRuns.CheckRuns) > 0 {
-		log.Infof("check runs: count=%d", len(checkRuns.CheckRuns))
+		log.Errorf("failed to fetch changed files: %v", err)
+		return nil, err
 	}
 
-	files, _, err := gh.PullRequests.ListFiles(ctx, owner, repo, number, nil)
-	if err != nil {
-		log.Warnf("failed to fetch changed files: %v", err)
-	} else {
-		log.Infof("changed files: count=%d", len(files))
+	// Calculate labels using the autolabeler package
+	result := r.labeler.CalculateLabels(files)
+
+	// Filter to only labels we need to add
+	newLabels := autolabeler.FilterNewLabels(result.Labels, pr.Labels)
+
+	details := AutoLabelDetails{
+		LabelsApplied: result.Labels,
+		FilesAnalyzed: result.FilesAnalyzed,
+		TotalChanges:  result.TotalChanges,
 	}
 
-	// Fetch the latest 5 comments on the PR
-	comments, _, err := gh.Issues.ListComments(ctx, owner, repo, number, &github.IssueListCommentsOptions{
-		Sort:        github.Ptr("created"),
-		Direction:   github.Ptr("desc"),
-		ListOptions: github.ListOptions{PerPage: 5},
-	})
-	if err != nil {
-		log.Warnf("failed to fetch comments: %v", err)
-	} else if len(comments) > 0 {
-		log.Infof("latest comments: count=%d", len(comments))
-		for _, comment := range comments {
-			body := comment.GetBody()
-			if len(body) > 80 {
-				body = body[:80] + "..."
+	// Apply new labels if any
+	if len(newLabels) > 0 {
+		log.Infof("adding labels: %v", newLabels)
+		_, _, err = gh.Issues.AddLabelsToIssue(ctx, owner, repo, number, newLabels)
+		if err != nil {
+			log.Errorf("failed to add labels: %v", err)
+			// Set failure status
+			if statusErr := session.SetActualState(ctx, "Failed to apply labels", &statusmanager.Status[AutoLabelDetails]{
+				ObservedGeneration: sha,
+				Status:             "completed",
+				Conclusion:         "failure",
+				Details:            details,
+			}); statusErr != nil {
+				log.Warnf("failed to set failure status: %v", statusErr)
 			}
-			log.Infof("  comment by %s at %s: %q",
-				comment.GetUser().GetLogin(),
-				comment.GetCreatedAt().Format("2006-01-02 15:04:05"),
-				body)
+			return nil, err
 		}
+	} else {
+		log.Infof("no new labels to add (calculated: %v)", result.Labels)
 	}
+
+	// Set success status
+	if err := session.SetActualState(ctx, "Labels applied successfully", &statusmanager.Status[AutoLabelDetails]{
+		ObservedGeneration: sha,
+		Status:             "completed",
+		Conclusion:         "success",
+		Details:            details,
+	}); err != nil {
+		log.Warnf("failed to set success status: %v", err)
+	}
+
+	log.Infof("auto-labeling complete: applied=%v files=%d changes=%d",
+		result.Labels, result.FilesAnalyzed, result.TotalChanges)
 
 	return &workqueue.ProcessResponse{}, nil
 }
