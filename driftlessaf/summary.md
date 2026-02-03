@@ -94,7 +94,7 @@ The networking module tried to enable logging on private DNS zones, which GCP do
 
 **Problem**: Couldn't destroy/recreate resources due to deletion protection.
 
-**Resolution**: Added `deletion_protection = false` to all modules:
+**Resolution**: Added `deletion_protection   = var.deletion_protection` to all modules:
 - `broker.tf`
 - `github-events.tf`
 - `reconciler.tf`
@@ -283,7 +283,7 @@ module "github-events-recorder" {
 
   team                  = var.team
   notification_channels = []
-  deletion_protection   = false
+  deletion_protection   = var.deletion_protection
 }
 ```
 
