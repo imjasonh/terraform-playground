@@ -17,6 +17,7 @@ GitHub Webhooks → github-events → cloudevent-broker → cloudevents-workqueu
 - **GitHub Events**: Webhook receiver that converts GitHub webhooks to CloudEvents with extensions like `pullrequesturl`
 - **CloudEvents Workqueue**: Subscribes to all events with `pullrequesturl` extension (pull_request, issue_comment on PRs, PR reviews) and enqueues them for processing
 - **PR Reconciler**: Regional Go gRPC service that processes PR events via workqueue, logging PR details including title, state, labels, reviews, status checks, changed files, and latest comments
+- **CloudEvent Recorder**: Records all GitHub events to GCS (via Pub/Sub cloud_storage_config) and imports to BigQuery via Data Transfer Service every 15 minutes. Supports 10 event types: check_run, check_suite, issue_comment, issues, projects_v2_item, pull_request, pull_request_review, pull_request_review_comment, push, workflow_run
 
 ## Issues Encountered and Resolutions
 
@@ -252,6 +253,58 @@ The trampoline checks if `issue.pull_request` is non-null in the webhook payload
 - `pull_request_review` events
 - `pull_request_review_comment` events
 
+### 16. CloudEvent Recorder Setup
+
+**Goal**: Record all GitHub events to BigQuery for analytics and auditing.
+
+**Solution**: Use the `cloudevent-recorder` module with `method = "gcs"`:
+
+```hcl
+module "github-events-recorder" {
+  source = "chainguard-dev/common/infra//modules/cloudevent-recorder"
+
+  project_id = var.project_id
+  name       = "github-events-recorder"
+  regions    = module.networking.regional-networks
+  broker     = module.cloudevent-broker.broker
+
+  # Use GCS method - Pub/Sub writes directly to GCS buckets
+  method = "gcs"
+
+  # Identity applying terraform (needed for BQ DTS permissions)
+  provisioner = "user:your-email@example.com"
+
+  # BigQuery location and retention
+  location         = "US"
+  retention-period = 30 # days
+
+  # Record all GitHub event types using schemas from github-events module
+  types = module.github-events.recorder-schemas
+
+  team                  = var.team
+  notification_channels = []
+  deletion_protection   = false
+}
+```
+
+**Data Flow**:
+1. GitHub webhook → github-events trampoline → CloudEvent broker (Pub/Sub)
+2. Pub/Sub subscription with `cloud_storage_config` writes JSON to GCS (batched every 5 minutes)
+3. BigQuery Data Transfer Service imports from GCS every 15 minutes
+4. Data available in BigQuery dataset `cloudevents_github_events_recorder`
+
+**BigQuery Tables Created**:
+- `dev_chainguard_github_check_run`
+- `dev_chainguard_github_check_suite`
+- `dev_chainguard_github_issue_comment`
+- `dev_chainguard_github_issues`
+- `dev_chainguard_github_projects_v2_item`
+- `dev_chainguard_github_pull_request`
+- `dev_chainguard_github_pull_request_review`
+- `dev_chainguard_github_pull_request_review_comment`
+- `dev_chainguard_github_push`
+- `dev_chainguard_github_workflow_run`
+
 ## Lessons Learned
 
 1. **Read module variable definitions carefully** - especially for complex nested types like `volumes` and `containers`.
@@ -283,3 +336,9 @@ The trampoline checks if `issue.pull_request` is non-null in the webhook payload
 14. **Debug Pub/Sub by creating unfiltered subscriptions** - when events seem to disappear, create a temporary subscription without filters to inspect what's actually being published. Remember to delete it after debugging.
 
 15. **CloudEvent extensions are set correctly for PR-related events** - the github-events trampoline sets `pullrequesturl` for `issue_comment`, `pull_request_review`, and `pull_request_review_comment` events when they're on PRs, not just for `pull_request` events.
+
+16. **cloudevent-recorder GCS method needs IAM propagation** - when using `method = "gcs"`, the module creates IAM bindings for the Pub/Sub service account to write to GCS buckets. These may need a second `terraform apply` to propagate before subscriptions can be created.
+
+17. **GCS Pub/Sub subscriptions batch writes** - the `cloud_storage_config` has a `max_duration` (default 5 minutes) that batches messages before writing to GCS. Don't expect immediate writes - data appears after the batch window.
+
+18. **Set ignore_unknown_values for GitHub event recording** - the `github-events` module's schemas don't include all fields from GitHub's API. BQ DTS imports will fail with errors like "No such field: body.issue.user.id". Set `ignore_unknown_values = true` in the `cloudevent-recorder` module as documented in the github-events README.

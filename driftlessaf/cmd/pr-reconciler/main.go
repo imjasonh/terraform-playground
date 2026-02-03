@@ -11,6 +11,7 @@ import (
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/chainguard-dev/clog"
+	_ "github.com/chainguard-dev/clog/gcp/init"
 	"github.com/chainguard-dev/terraform-infra-common/pkg/httpmetrics"
 	"github.com/chainguard-dev/terraform-infra-common/pkg/workqueue"
 	"github.com/google/go-github/v68/github"
