@@ -38,5 +38,5 @@ module "pr-reconciler" {
 
   team                  = var.team
   notification_channels = []
-  deletion_protection   = false
+  deletion_protection   = var.deletion_protection
 }
