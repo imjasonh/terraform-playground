@@ -230,3 +230,13 @@ flowchart TB
 | Secret | Purpose |
 |--------|---------|
 | `driftlessaf-github-app-private-key` | GitHub App authentication |
+
+### Cloud Monitoring Dashboards (5)
+
+| Dashboard | Purpose |
+|-----------|---------|
+| `Reconciler: pr-logger` | PR reconciler metrics: workqueue state, error reporting, logs, HTTP/gRPC, GitHub API, resources |
+| `Cloud Workqueue: pr-logger-wq` | Workqueue metrics: queue depth, processing rate, retries, latency |
+| `github-events-recorder` | Event recorder metrics: Pub/Sub throughput, GCS writes |
+| `driftless-github-events` | GitHub events trampoline metrics |
+| `driftlessaf` | CloudEvent broker metrics |
