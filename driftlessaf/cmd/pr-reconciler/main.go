@@ -19,8 +19,8 @@ import (
 )
 
 type envConfig struct {
-	Port            int    `env:"PORT, default=8080"`
-	GithubAppID     int64  `env:"GITHUB_APP_ID, required"`
+	Port             int    `env:"PORT, default=8080"`
+	GithubAppID      int64  `env:"GITHUB_APP_ID, required"`
 	GithubPrivateKey string `env:"GITHUB_PRIVATE_KEY, required"`
 }
 
@@ -59,7 +59,8 @@ func main() {
 	grpcServer := grpc.NewServer()
 	workqueue.RegisterWorkqueueServiceServer(grpcServer, reconciler)
 
-	httpmetrics.ServeMetrics()
+	// ServeMetrics must run in a goroutine - it blocks!
+	go httpmetrics.ServeMetrics()
 	defer httpmetrics.SetupTracer(ctx)()
 
 	log.Infof("starting gRPC server on port %d", cfg.Port)
@@ -91,7 +92,6 @@ func (r *PRReconciler) getClientForRepo(ctx context.Context, owner, repo string)
 	}
 
 	installationID := installation.GetID()
-	log.Debugf("found installation %d for %s/%s", installationID, owner, repo)
 
 	// Check cache first
 	r.mu.RLock()
@@ -148,7 +148,8 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 		return &workqueue.ProcessResponse{}, nil
 	}
 
-	// Get a client for this repo's installation
+	log = log.With("owner", owner, "repo", repo, "number", number)
+
 	gh, err := r.getClientForRepo(ctx, owner, repo)
 	if err != nil {
 		log.Errorf("failed to get GitHub client: %v", err)
@@ -161,37 +162,23 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 		return nil, err
 	}
 
-	log.Infof("processing PR",
-		"owner", owner,
-		"repo", repo,
-		"number", number,
-		"title", pr.GetTitle(),
-		"state", pr.GetState(),
-		"author", pr.GetUser().GetLogin(),
-		"head", pr.GetHead().GetRef(),
-		"base", pr.GetBase().GetRef(),
-		"mergeable", pr.GetMergeable(),
-		"additions", pr.GetAdditions(),
-		"deletions", pr.GetDeletions(),
-		"changed_files", pr.GetChangedFiles(),
-	)
+	log.Infof("processing PR: title=%q state=%s author=%s",
+		pr.GetTitle(), pr.GetState(), pr.GetUser().GetLogin())
 
 	var labelNames []string
 	for _, label := range pr.Labels {
 		labelNames = append(labelNames, label.GetName())
 	}
-	log.Infof("PR labels", "labels", labelNames)
+	if len(labelNames) > 0 {
+		log.Infof("PR labels: %v", labelNames)
+	}
 
 	reviews, _, err := gh.PullRequests.ListReviews(ctx, owner, repo, number, nil)
 	if err != nil {
 		log.Warnf("failed to fetch reviews: %v", err)
-	} else {
+	} else if len(reviews) > 0 {
 		for _, review := range reviews {
-			log.Infof("PR review",
-				"reviewer", review.GetUser().GetLogin(),
-				"state", review.GetState(),
-				"submitted_at", review.GetSubmittedAt(),
-			)
+			log.Infof("review: reviewer=%s state=%s", review.GetUser().GetLogin(), review.GetState())
 		}
 	}
 
@@ -199,43 +186,42 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 	if err != nil {
 		log.Warnf("failed to fetch combined status: %v", err)
 	} else {
-		log.Infof("PR combined status",
-			"state", combinedStatus.GetState(),
-			"total_count", combinedStatus.GetTotalCount(),
-		)
-		for _, status := range combinedStatus.Statuses {
-			log.Infof("PR status",
-				"context", status.GetContext(),
-				"state", status.GetState(),
-				"description", status.GetDescription(),
-			)
-		}
+		log.Infof("combined status: state=%s count=%d", combinedStatus.GetState(), combinedStatus.GetTotalCount())
 	}
 
 	checkRuns, _, err := gh.Checks.ListCheckRunsForRef(ctx, owner, repo, pr.GetHead().GetSHA(), nil)
 	if err != nil {
 		log.Warnf("failed to fetch check runs: %v", err)
-	} else {
-		for _, check := range checkRuns.CheckRuns {
-			log.Infof("PR check run",
-				"name", check.GetName(),
-				"status", check.GetStatus(),
-				"conclusion", check.GetConclusion(),
-			)
-		}
+	} else if len(checkRuns.CheckRuns) > 0 {
+		log.Infof("check runs: count=%d", len(checkRuns.CheckRuns))
 	}
 
 	files, _, err := gh.PullRequests.ListFiles(ctx, owner, repo, number, nil)
 	if err != nil {
 		log.Warnf("failed to fetch changed files: %v", err)
 	} else {
-		for _, file := range files {
-			log.Infof("PR file change",
-				"filename", file.GetFilename(),
-				"status", file.GetStatus(),
-				"additions", file.GetAdditions(),
-				"deletions", file.GetDeletions(),
-			)
+		log.Infof("changed files: count=%d", len(files))
+	}
+
+	// Fetch the latest 5 comments on the PR
+	comments, _, err := gh.Issues.ListComments(ctx, owner, repo, number, &github.IssueListCommentsOptions{
+		Sort:        github.Ptr("created"),
+		Direction:   github.Ptr("desc"),
+		ListOptions: github.ListOptions{PerPage: 5},
+	})
+	if err != nil {
+		log.Warnf("failed to fetch comments: %v", err)
+	} else if len(comments) > 0 {
+		log.Infof("latest comments: count=%d", len(comments))
+		for _, comment := range comments {
+			body := comment.GetBody()
+			if len(body) > 80 {
+				body = body[:80] + "..."
+			}
+			log.Infof("  comment by %s at %s: %q",
+				comment.GetUser().GetLogin(),
+				comment.GetCreatedAt().Format("2006-01-02 15:04:05"),
+				body)
 		}
 	}
 

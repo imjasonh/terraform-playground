@@ -11,6 +11,9 @@ module "pr-reconciler" {
   regions         = module.networking.regional-networks
   service_account = google_service_account.reconciler.email
 
+  # Allow direct internet access for GitHub API calls
+  egress = "PRIVATE_RANGES_ONLY"
+
   containers = {
     "reconciler" = {
       source = {

@@ -1,21 +1,22 @@
-module "pr-trigger" {
-  for_each = module.networking.regional-networks
-
-  source = "chainguard-dev/common/infra//modules/cloudevent-trigger"
+module "pr-workqueue" {
+  source = "chainguard-dev/common/infra//modules/cloudevents-workqueue"
 
   project_id = var.project_id
   name       = "pr-events"
-  broker     = module.cloudevent-broker.broker[each.key]
+  regions    = module.networking.regional-networks
+  broker     = module.cloudevent-broker.broker
 
-  filter = {
-    "type" = "dev.chainguard.github.pull_request"
-  }
+  # Empty filter matches all events that have pullrequesturl extension
+  # This includes pull_request, issue_comment on PRs, pull_request_review, etc.
+  filters = [{}]
 
-  private-service = {
-    name   = module.pr-reconciler.receiver.name
-    region = each.key
+  extension_key = "pullrequesturl"
+
+  workqueue = {
+    name = module.pr-reconciler.receiver.name
   }
 
   team                  = var.team
   notification_channels = []
+  deletion_protection   = false
 }
