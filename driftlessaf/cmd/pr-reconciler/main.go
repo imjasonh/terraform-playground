@@ -292,6 +292,62 @@ var prURLRegex = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)/pull/(
 // repoURLRegex matches GitHub repo URLs like https://github.com/owner/repo
 var repoURLRegex = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)$`)
 
+// ciState represents the evaluated state of CI checks
+type ciState int
+
+const (
+	ciStateNoChecks ciState = iota // No checks exist yet (workflow not started)
+	ciStatePending                 // Checks are running
+	ciStatePassing                 // All checks passed
+	ciStateFailing                 // One or more checks failed
+)
+
+// ciStatusResult holds the result of CI status evaluation
+type ciStatusResult struct {
+	State     ciState
+	Reasoning string
+}
+
+// evaluateCIStatus determines the CI state based on check counts.
+// This is extracted to enable unit testing of the CI evaluation logic.
+func evaluateCIStatus(pending, passed, failed, previousTurn int) ciStatusResult {
+	// No checks at all - workflow hasn't started yet
+	if pending == 0 && passed == 0 && failed == 0 {
+		return ciStatusResult{
+			State:     ciStateNoChecks,
+			Reasoning: "Waiting for CI checks to start",
+		}
+	}
+
+	// Checks still running
+	if pending > 0 {
+		return ciStatusResult{
+			State:     ciStatePending,
+			Reasoning: fmt.Sprintf("Waiting for %d CI checks to complete", pending),
+		}
+	}
+
+	// All checks completed and none failed
+	if failed == 0 {
+		if previousTurn > 0 {
+			return ciStatusResult{
+				State:     ciStatePassing,
+				Reasoning: fmt.Sprintf("CI passed after %d fix attempt(s)", previousTurn),
+			}
+		}
+		return ciStatusResult{
+			State:     ciStatePassing,
+			Reasoning: "CI is passing",
+		}
+	}
+
+	// Some checks failed
+	return ciStatusResult{
+		State:     ciStateFailing,
+		Reasoning: fmt.Sprintf("%d CI checks failed", failed),
+	}
+}
+
 func parsePRURL(url string) (owner, repo string, number int, err error) {
 	matches := prURLRegex.FindStringSubmatch(url)
 	if matches == nil {
@@ -536,36 +592,29 @@ func (r *PRReconciler) runCIFixer(ctx context.Context, gh *github.Client, owner,
 
 	log.Infof("CI status: pending=%d passed=%d failed=%d", pending, passed, failed)
 
-	// If no checks exist yet, treat as pending - workflows may not have started
-	if pending == 0 && passed == 0 && failed == 0 {
+	// Evaluate CI status and update details accordingly
+	status := evaluateCIStatus(pending, passed, failed, previousTurn)
+	switch status.State {
+	case ciStateNoChecks:
 		log.Infof("No CI checks found yet, treating as pending")
 		details.CIFixPending = true
-		details.CIFixReasoning = "Waiting for CI checks to start"
+		details.CIFixReasoning = status.Reasoning
 		details.CIFixTurns = previousTurn
 		return nil
-	}
-
-	// If checks are still pending, skip this reconciliation.
-	// We'll be triggered again when they complete.
-	if pending > 0 {
+	case ciStatePending:
 		log.Infof("CI still pending (%d checks), skipping CI fixer", pending)
 		details.CIFixPending = true
-		details.CIFixReasoning = fmt.Sprintf("Waiting for %d CI checks to complete", pending)
+		details.CIFixReasoning = status.Reasoning
 		details.CIFixTurns = previousTurn
 		return nil
-	}
-
-	// If all checks passing, we're done!
-	if failed == 0 {
+	case ciStatePassing:
 		log.Infof("All %d checks passing", passed)
 		details.CIFixSuccess = true
 		details.CIFixTurns = previousTurn
-		if previousTurn > 0 {
-			details.CIFixReasoning = fmt.Sprintf("CI passed after %d fix attempt(s)", previousTurn)
-		} else {
-			details.CIFixReasoning = "CI is passing"
-		}
+		details.CIFixReasoning = status.Reasoning
 		return nil
+	case ciStateFailing:
+		// Continue to attempt fix
 	}
 
 	// Calculate current turn
