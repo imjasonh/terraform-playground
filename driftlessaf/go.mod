@@ -1,6 +1,6 @@
 module github.com/imjasonh/terraform-playground/driftlessaf
 
-go 1.25.5
+go 1.23
 
 require (
 	chainguard.dev/driftlessaf v0.0.0-00010101000000-000000000000
@@ -31,7 +31,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.3.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
-	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/beorn7/perks v0.1.0 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
