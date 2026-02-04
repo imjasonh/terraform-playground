@@ -350,7 +350,10 @@ func parsePRURL(url string) (owner, repo string, number int, err error) {
 	if matches == nil {
 		return "", "", 0, fmt.Errorf("invalid PR URL: %s", url)
 	}
-	number, _ = strconv.Atoi(matches[3])
+	number, err = strconv.Atoi(matches[3])
+	if err != nil {
+		return "", "", 0, fmt.Errorf("invalid PR number in URL %s: %w", url, err)
+	}
 	return matches[1], matches[2], number, nil
 }
 
