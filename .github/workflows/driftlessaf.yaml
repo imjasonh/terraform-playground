@@ -10,9 +10,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6.2.0
         with:
           go-version-file: driftlessaf/go.mod
           cache-dependency-path: driftlessaf/go.sum
@@ -21,9 +21,8 @@ jobs:
         working-directory: driftlessaf
         run: go test ./...
 
-      # TODO: Re-enable when golangci-lint supports Go 1.25
-      # - name: Run golangci-lint
-      #   uses: golangci/golangci-lint-action@v6
-      #   with:
-      #     working-directory: driftlessaf
-      #     version: latest
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9.2.0
+        with:
+          working-directory: driftlessaf
+          version: latest
