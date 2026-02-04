@@ -3,6 +3,14 @@ resource "google_service_account" "reconciler" {
   account_id = "driftlessaf-pr-reconciler"
 }
 
+# Grant Vertex AI permissions for CI fixer (Claude API access)
+resource "google_project_iam_member" "reconciler_vertex_ai" {
+  count   = var.enable_ci_fixer ? 1 : 0
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.reconciler.email}"
+}
+
 module "pr-reconciler" {
   source = "chainguard-dev/common/infra//modules/regional-go-reconciler"
 
