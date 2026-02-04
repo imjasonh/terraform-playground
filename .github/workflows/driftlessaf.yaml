@@ -25,3 +25,4 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           working-directory: driftlessaf
+          version: latest
