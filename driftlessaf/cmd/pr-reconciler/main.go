@@ -327,9 +327,13 @@ func evaluateCIStatus(pending, passed, failed, previousTurn int) ciStatusResult 
 	// All checks completed and none failed
 	if failed == 0 {
 		if previousTurn > 0 {
+			attemptWord := "attempt"
+			if previousTurn > 1 {
+				attemptWord = "attempts"
+			}
 			return ciStatusResult{
 				State:     ciStatePassing,
-				Reasoning: fmt.Sprintf("CI passed after %d fix attempt(s)", previousTurn),
+				Reasoning: fmt.Sprintf("CI passed after %d fix %s", previousTurn, attemptWord),
 			}
 		}
 		return ciStatusResult{
