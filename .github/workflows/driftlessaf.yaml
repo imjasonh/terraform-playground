@@ -15,6 +15,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: driftlessaf/go.mod
+          cache-dependency-path: driftlessaf/go.sum
 
       - name: Run tests
         working-directory: driftlessaf

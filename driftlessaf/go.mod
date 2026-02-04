@@ -109,4 +109,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace chainguard.dev/driftlessaf => github.com/driftlessaf/go-driftlessaf v0.0.0-20260202085307-69924c069117
+replace chainguard.dev/driftlessaf => github.com/driftlessaf/go-driftlessaf v0.0.0-20250202085307-69924c069117
