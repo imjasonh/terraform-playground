@@ -29,3 +29,28 @@ variable "notification_channels" {
   type        = list(string)
   description = "List of notification channel IDs to attach to alerting policies."
 }
+
+# CI Fixer configuration
+variable "enable_ci_fixer" {
+  type        = bool
+  description = "Whether to enable the CI fixer agent."
+  default     = false
+}
+
+variable "ci_fixer_model" {
+  type        = string
+  description = "The Claude model to use for CI fixing."
+  default     = "claude-sonnet-4-20250514"
+}
+
+variable "ci_fixer_max_turns" {
+  type        = number
+  description = "Maximum number of fix attempts per CI failure."
+  default     = 3
+}
+
+variable "ci_fixer_label" {
+  type        = string
+  description = "GitHub label that triggers CI fixing."
+  default     = "ci-autofix"
+}
