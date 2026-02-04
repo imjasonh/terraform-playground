@@ -40,7 +40,7 @@ variable "enable_ci_fixer" {
 variable "ci_fixer_model" {
   type        = string
   description = "The Claude model to use for CI fixing."
-  default     = "claude-sonnet-4-20250514"
+  default     = "claude-sonnet-4@20250514"
 }
 
 variable "ci_fixer_max_turns" {

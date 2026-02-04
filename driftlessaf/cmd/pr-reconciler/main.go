@@ -124,7 +124,7 @@ type envConfig struct {
 	EnableCIFixer bool   `env:"ENABLE_CI_FIXER, default=false"`
 	GCPProjectID  string `env:"GCP_PROJECT_ID"`
 	GCPRegion     string `env:"GCP_REGION, default=us-central1"`
-	ClaudeModel   string `env:"CLAUDE_MODEL, default=claude-sonnet-4-5@20250514"`
+	ClaudeModel   string `env:"CLAUDE_MODEL, default=claude-sonnet-4@20250514"`
 	MaxTurns      int    `env:"MAX_TURNS, default=3"`
 	CIFixerLabel  string `env:"CI_FIXER_LABEL, default=ci-autofix"`
 }
