@@ -54,3 +54,9 @@ variable "ci_fixer_label" {
   description = "GitHub label that triggers CI fixing."
   default     = "ci-autofix"
 }
+
+variable "ci_fixer_region" {
+  type        = string
+  description = "GCP region for Vertex AI Claude API calls."
+  default     = "us-east5"
+}

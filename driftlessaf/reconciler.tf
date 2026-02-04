@@ -37,7 +37,7 @@ module "pr-reconciler" {
       var.enable_ci_fixer ? [
         { name = "ENABLE_CI_FIXER", value = "true" },
         { name = "GCP_PROJECT_ID", value = var.project_id },
-        { name = "GCP_REGION", value = keys(module.networking.regional-networks)[0] },
+        { name = "GCP_REGION", value = var.ci_fixer_region },
         { name = "CLAUDE_MODEL", value = var.ci_fixer_model },
         { name = "MAX_TURNS", value = tostring(var.ci_fixer_max_turns) },
         { name = "CI_FIXER_LABEL", value = var.ci_fixer_label },
