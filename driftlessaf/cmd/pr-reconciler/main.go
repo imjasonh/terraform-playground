@@ -536,6 +536,15 @@ func (r *PRReconciler) runCIFixer(ctx context.Context, gh *github.Client, owner,
 
 	log.Infof("CI status: pending=%d passed=%d failed=%d", pending, passed, failed)
 
+	// If no checks exist yet, treat as pending - workflows may not have started
+	if pending == 0 && passed == 0 && failed == 0 {
+		log.Infof("No CI checks found yet, treating as pending")
+		details.CIFixPending = true
+		details.CIFixReasoning = "Waiting for CI checks to start"
+		details.CIFixTurns = previousTurn
+		return nil
+	}
+
 	// If checks are still pending, skip this reconciliation.
 	// We'll be triggered again when they complete.
 	if pending > 0 {
