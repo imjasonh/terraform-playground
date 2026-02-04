@@ -43,6 +43,7 @@ type ReconcilerDetails struct {
 	CIFixTurns      int      `json:"ciFixTurns,omitempty"`
 	CIFixNeedsHuman bool     `json:"ciFixNeedsHuman,omitempty"`
 	CIFixCommit     string   `json:"ciFixCommit,omitempty"`
+	CIFixPending    bool     `json:"ciFixPending,omitempty"` // CI checks still running
 }
 
 // Markdown renders the details for display in the GitHub Check Run.
@@ -390,10 +391,15 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 		details.CIFixCommit = existingStatus.Details.CIFixCommit
 	}
 
-	// Determine conclusion
+	// Determine conclusion and status
+	status := "completed"
 	conclusion := "success"
 	summary := "Reconciliation complete"
-	if details.CIFixAttempted && !details.CIFixSuccess && !details.CIFixNeedsHuman {
+	if details.CIFixPending {
+		status = "in_progress"
+		conclusion = ""
+		summary = "Waiting for CI checks to complete"
+	} else if details.CIFixAttempted && !details.CIFixSuccess && !details.CIFixNeedsHuman {
 		conclusion = "failure"
 		summary = "CI fix attempted but failed"
 	} else if details.CIFixNeedsHuman {
@@ -404,7 +410,7 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 	// Set final status
 	if err := session.SetActualState(ctx, summary, &statusmanager.Status[ReconcilerDetails]{
 		ObservedGeneration: sha,
-		Status:             "completed",
+		Status:             status,
 		Conclusion:         conclusion,
 		Details:            details,
 	}); err != nil {
@@ -497,6 +503,7 @@ func (r *PRReconciler) runCIFixer(ctx context.Context, gh *github.Client, owner,
 	// We'll be triggered again when they complete.
 	if pending > 0 {
 		log.Infof("CI still pending (%d checks), skipping CI fixer", pending)
+		details.CIFixPending = true
 		details.CIFixReasoning = fmt.Sprintf("Waiting for %d CI checks to complete", pending)
 		details.CIFixTurns = previousTurn
 		return nil
