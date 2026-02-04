@@ -66,29 +66,49 @@ func (d ReconcilerDetails) Markdown() string {
 		}
 	}
 
-	// CI fixer section
-	if d.CIFixAttempted {
+	// CI fixer section - show if any CI fixer activity occurred
+	if d.CIFixAttempted || d.CIFixPending || d.CIFixSuccess {
 		sb.WriteString("## CI Fixer\n\n")
 
-		if d.CIFixNeedsHuman {
+		if d.CIFixPending {
+			// CI is still running, waiting to evaluate
+			sb.WriteString("⏳ **Waiting for CI to complete**\n\n")
+			sb.WriteString(fmt.Sprintf("%s\n\n", d.CIFixReasoning))
+		} else if d.CIFixNeedsHuman {
+			// Agent determined human intervention is needed
 			sb.WriteString("⚠️ **Human intervention requested**\n\n")
 			sb.WriteString(fmt.Sprintf("Reason: %s\n\n", d.CIFixReasoning))
+			if d.CIFixTurns > 0 {
+				sb.WriteString(fmt.Sprintf("Turns attempted: %d\n\n", d.CIFixTurns))
+			}
 		} else if d.CIFixSuccess {
-			sb.WriteString("✅ **Fix applied successfully**\n\n")
-			if len(d.CIFixFiles) > 0 {
-				sb.WriteString("### Files Modified\n\n")
-				for _, f := range d.CIFixFiles {
-					sb.WriteString(fmt.Sprintf("- `%s`\n", f))
+			// CI is passing
+			if d.CIFixTurns > 0 {
+				// We made fixes and CI now passes
+				sb.WriteString("✅ **CI passing after fix**\n\n")
+				if len(d.CIFixFiles) > 0 {
+					sb.WriteString("### Files Modified\n\n")
+					for _, f := range d.CIFixFiles {
+						sb.WriteString(fmt.Sprintf("- `%s`\n", f))
+					}
+					sb.WriteString("\n")
 				}
-				sb.WriteString("\n")
+				if d.CIFixCommit != "" {
+					sb.WriteString(fmt.Sprintf("Commit: `%s`\n\n", d.CIFixCommit))
+				}
+				sb.WriteString(fmt.Sprintf("Turns used: %d\n\n", d.CIFixTurns))
+			} else {
+				// CI was already passing, no fixes needed
+				sb.WriteString("✅ **CI is passing**\n\n")
+				sb.WriteString("No fixes were needed.\n\n")
 			}
-			if d.CIFixCommit != "" {
-				sb.WriteString(fmt.Sprintf("Commit: `%s`\n\n", d.CIFixCommit))
-			}
-			sb.WriteString(fmt.Sprintf("Turns used: %d\n\n", d.CIFixTurns))
-		} else {
+		} else if d.CIFixAttempted {
+			// We attempted fixes but CI still failing
 			sb.WriteString("❌ **Could not fix CI failure**\n\n")
 			sb.WriteString(fmt.Sprintf("Reason: %s\n\n", d.CIFixReasoning))
+			if d.CIFixTurns > 0 {
+				sb.WriteString(fmt.Sprintf("Turns attempted: %d\n\n", d.CIFixTurns))
+			}
 		}
 	}
 
