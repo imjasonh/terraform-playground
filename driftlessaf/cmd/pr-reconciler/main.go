@@ -289,12 +289,6 @@ func (r *PRReconciler) getTransportForRepo(ctx context.Context, owner, repo stri
 // prURLRegex matches GitHub PR URLs like https://github.com/owner/repo/pull/123
 var prURLRegex = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)$`)
 
-// repoURLRegex matches GitHub repo URLs like https://github.com/owner/repo
-var repoURLRegex = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)$`)
-
-// repoSubjectRegex matches repo subject format like owner/repo (from CloudEvents subject)
-var repoSubjectRegex = regexp.MustCompile(`^([^/]+)/([^/]+)$`)
-
 // ciState represents the evaluated state of CI checks
 type ciState int
 
@@ -360,36 +354,13 @@ func parsePRURL(url string) (owner, repo string, number int, err error) {
 	return matches[1], matches[2], number, nil
 }
 
-// parseRepoKey parses a repo identifier which can be either:
-// - Full URL: https://github.com/owner/repo
-// - Subject format: owner/repo (from CloudEvents subject attribute)
-func parseRepoKey(key string) (owner, repo string, err error) {
-	// Try full URL format first
-	matches := repoURLRegex.FindStringSubmatch(key)
-	if matches != nil {
-		return matches[1], matches[2], nil
-	}
-	// Try subject format (owner/repo)
-	matches = repoSubjectRegex.FindStringSubmatch(key)
-	if matches != nil {
-		return matches[1], matches[2], nil
-	}
-	return "", "", fmt.Errorf("invalid repo key: %s", key)
-}
-
 func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessRequest) (*workqueue.ProcessResponse, error) {
 	log := clog.FromContext(ctx).With("key", req.Key)
 
 	owner, repo, number, err := parsePRURL(req.Key)
 	if err != nil {
-		// Key is not a PR URL - might be a repo URL from check_run events.
-		// Try to parse as repo URL and handle check_run completion.
-		owner, repo, parseErr := parseRepoKey(req.Key)
-		if parseErr != nil {
-			log.Warnf("skipping unknown key format: %v", err)
-			return &workqueue.ProcessResponse{}, nil
-		}
-		return r.processCheckRunEvent(ctx, owner, repo)
+		log.Warnf("skipping unknown key format: %v", err)
+		return &workqueue.ProcessResponse{}, nil
 	}
 
 	log = log.With("owner", owner, "repo", repo, "number", number)
@@ -524,6 +495,12 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 
 	log.Infof("reconciliation complete: labels=%v ci_fix=%v",
 		details.LabelsApplied, details.CIFixSuccess)
+
+	// If CI is pending, requeue to check again in 60 seconds
+	if details.CIFixPending {
+		log.Infof("CI pending, requeueing to check again in 60 seconds")
+		return &workqueue.ProcessResponse{RequeueAfterSeconds: 60}, nil
+	}
 
 	return &workqueue.ProcessResponse{}, nil
 }
@@ -793,70 +770,4 @@ func hasLabel(labels []*github.Label, name string) bool {
 
 func (r *PRReconciler) GetKeyState(ctx context.Context, req *workqueue.GetKeyStateRequest) (*workqueue.KeyState, error) {
 	return &workqueue.KeyState{}, nil
-}
-
-// processCheckRunEvent handles check_run completion events.
-// When a CI check completes, we need to re-evaluate any open PRs that have the
-// ci-autofix label and might need fixing. Since check_run events don't include
-// a PR URL directly (the github-events module doesn't set pullrequesturl for them),
-// we receive them keyed by repo URL and look up relevant PRs ourselves.
-func (r *PRReconciler) processCheckRunEvent(ctx context.Context, owner, repo string) (*workqueue.ProcessResponse, error) {
-	log := clog.FromContext(ctx).With("owner", owner, "repo", repo)
-	log.Infof("processing check_run event for repo")
-
-	// If CI fixer is not enabled, nothing to do
-	if r.ciFixerAgent == nil {
-		log.Debugf("CI fixer not enabled, skipping check_run event")
-		return &workqueue.ProcessResponse{}, nil
-	}
-
-	gh, err := r.getClientForRepo(ctx, owner, repo)
-	if err != nil {
-		return nil, fmt.Errorf("getting client: %w", err)
-	}
-
-	// List open PRs with the ci-autofix label
-	prs, _, err := gh.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
-		State: "open",
-		ListOptions: github.ListOptions{
-			PerPage: 100,
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("listing PRs: %w", err)
-	}
-
-	// Filter to PRs with ci-autofix label
-	var relevantPRs []*github.PullRequest
-	for _, pr := range prs {
-		if hasLabel(pr.Labels, r.cfg.CIFixerLabel) {
-			relevantPRs = append(relevantPRs, pr)
-		}
-	}
-
-	if len(relevantPRs) == 0 {
-		log.Infof("no open PRs with %s label", r.cfg.CIFixerLabel)
-		return &workqueue.ProcessResponse{}, nil
-	}
-
-	log.Infof("found %d PRs with %s label to check", len(relevantPRs), r.cfg.CIFixerLabel)
-
-	// Process each relevant PR directly
-	// We can't re-enqueue to the workqueue, so we process them inline.
-	// This is fine because check_run events are relatively infrequent.
-	for _, pr := range relevantPRs {
-		prURL := pr.GetHTMLURL()
-		log.Infof("triggering reconciliation for PR %s", prURL)
-
-		// Call Process with a synthetic request for each PR
-		_, err := r.Process(ctx, &workqueue.ProcessRequest{
-			Key: prURL,
-		})
-		if err != nil {
-			log.Warnf("failed to process PR %s: %v", prURL, err)
-			// Continue processing other PRs
-		}
-	}
-
-	return &workqueue.ProcessResponse{}, nil
 }
