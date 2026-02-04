@@ -1,6 +1,6 @@
 module github.com/imjasonh/terraform-playground/driftlessaf
 
-go 1.25.4
+go 1.23.4
 
 require (
 	chainguard.dev/driftlessaf v0.0.0-20260203233541-d36409acc950
