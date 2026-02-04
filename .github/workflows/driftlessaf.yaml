@@ -21,8 +21,9 @@ jobs:
         working-directory: driftlessaf
         run: go test ./...
 
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          working-directory: driftlessaf
-          version: latest
+      # TODO: Re-enable when golangci-lint supports Go 1.25
+      # - name: Run golangci-lint
+      #   uses: golangci/golangci-lint-action@v6
+      #   with:
+      #     working-directory: driftlessaf
+      #     version: latest
