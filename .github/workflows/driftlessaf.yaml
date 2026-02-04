@@ -1,0 +1,28 @@
+name: driftlessaf
+
+on:
+  pull_request:
+    paths:
+      - "driftlessaf/**"
+      - ".github/workflows/driftlessaf.yaml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-go@v6.2.0
+        with:
+          go-version-file: driftlessaf/go.mod
+          cache-dependency-path: driftlessaf/go.sum
+
+      - name: Run tests
+        working-directory: driftlessaf
+        run: go test ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9.2.0
+        with:
+          working-directory: driftlessaf
+          version: latest

@@ -3,6 +3,14 @@ resource "google_service_account" "reconciler" {
   account_id = "driftlessaf-pr-reconciler"
 }
 
+# Grant Vertex AI permissions for CI fixer (Claude API access)
+resource "google_project_iam_member" "reconciler_vertex_ai" {
+  count   = var.enable_ci_fixer ? 1 : 0
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.reconciler.email}"
+}
+
 module "pr-reconciler" {
   source = "chainguard-dev/common/infra//modules/regional-go-reconciler"
 
@@ -21,7 +29,7 @@ module "pr-reconciler" {
         importpath  = "./cmd/pr-reconciler"
       }
       ports = [{ container_port = 8080 }]
-      env = [
+      env = concat([
         { name = "GITHUB_APP_ID", value = var.github_app_id },
         {
           name = "GITHUB_PRIVATE_KEY"
@@ -32,7 +40,16 @@ module "pr-reconciler" {
             }
           }
         },
-      ]
+      ],
+      # CI Fixer configuration (only when enabled)
+      var.enable_ci_fixer ? [
+        { name = "ENABLE_CI_FIXER", value = "true" },
+        { name = "GCP_PROJECT_ID", value = var.project_id },
+        { name = "GCP_REGION", value = var.ci_fixer_region },
+        { name = "CLAUDE_MODEL", value = var.ci_fixer_model },
+        { name = "MAX_TURNS", value = tostring(var.ci_fixer_max_turns) },
+        { name = "CI_FIXER_LABEL", value = var.ci_fixer_label },
+      ] : [])
     }
   }
 
