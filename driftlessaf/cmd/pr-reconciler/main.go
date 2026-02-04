@@ -292,6 +292,9 @@ var prURLRegex = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)/pull/(
 // repoURLRegex matches GitHub repo URLs like https://github.com/owner/repo
 var repoURLRegex = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)$`)
 
+// repoSubjectRegex matches repo subject format like owner/repo (from CloudEvents subject)
+var repoSubjectRegex = regexp.MustCompile(`^([^/]+)/([^/]+)$`)
+
 // ciState represents the evaluated state of CI checks
 type ciState int
 
@@ -357,12 +360,21 @@ func parsePRURL(url string) (owner, repo string, number int, err error) {
 	return matches[1], matches[2], number, nil
 }
 
-func parseRepoURL(url string) (owner, repo string, err error) {
-	matches := repoURLRegex.FindStringSubmatch(url)
-	if matches == nil {
-		return "", "", fmt.Errorf("invalid repo URL: %s", url)
+// parseRepoKey parses a repo identifier which can be either:
+// - Full URL: https://github.com/owner/repo
+// - Subject format: owner/repo (from CloudEvents subject attribute)
+func parseRepoKey(key string) (owner, repo string, err error) {
+	// Try full URL format first
+	matches := repoURLRegex.FindStringSubmatch(key)
+	if matches != nil {
+		return matches[1], matches[2], nil
 	}
-	return matches[1], matches[2], nil
+	// Try subject format (owner/repo)
+	matches = repoSubjectRegex.FindStringSubmatch(key)
+	if matches != nil {
+		return matches[1], matches[2], nil
+	}
+	return "", "", fmt.Errorf("invalid repo key: %s", key)
 }
 
 func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessRequest) (*workqueue.ProcessResponse, error) {
@@ -372,7 +384,7 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 	if err != nil {
 		// Key is not a PR URL - might be a repo URL from check_run events.
 		// Try to parse as repo URL and handle check_run completion.
-		owner, repo, parseErr := parseRepoURL(req.Key)
+		owner, repo, parseErr := parseRepoKey(req.Key)
 		if parseErr != nil {
 			log.Warnf("skipping unknown key format: %v", err)
 			return &workqueue.ProcessResponse{}, nil

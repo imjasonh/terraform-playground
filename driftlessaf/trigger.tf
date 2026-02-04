@@ -47,8 +47,10 @@ module "check-run-workqueue" {
     "action" = "completed"
   }]
 
-  # Use repository URL as the key since check_run events don't have pullrequesturl
-  extension_key = "repo"
+  # Use subject (repo full name like "owner/repo") as the key.
+  # The trampoline sets event.SetSubject(repoFullName) which becomes ce-subject attribute.
+  # Note: "repo" extension doesn't exist - the trampoline only sets subject, not a repo extension.
+  extension_key = "subject"
 
   workqueue = {
     name = module.pr-reconciler.receiver.name

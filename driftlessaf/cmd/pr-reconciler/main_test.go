@@ -314,34 +314,48 @@ func TestParsePRURL(t *testing.T) {
 	}
 }
 
-func TestParseRepoURL(t *testing.T) {
+func TestParseRepoKey(t *testing.T) {
 	for _, tt := range []struct {
 		desc      string
-		url       string
+		key       string
 		wantOwner string
 		wantRepo  string
 		wantErr   bool
 	}{{
 		desc:      "valid repo URL",
-		url:       "https://github.com/owner/repo",
+		key:       "https://github.com/owner/repo",
 		wantOwner: "owner",
 		wantRepo:  "repo",
 	}, {
 		desc:      "valid repo URL with dashes",
-		url:       "https://github.com/my-org/my-repo",
+		key:       "https://github.com/my-org/my-repo",
 		wantOwner: "my-org",
 		wantRepo:  "my-repo",
 	}, {
-		desc:    "PR URL is not a repo URL",
-		url:     "https://github.com/owner/repo/pull/123",
+		desc:      "subject format owner/repo",
+		key:       "owner/repo",
+		wantOwner: "owner",
+		wantRepo:  "repo",
+	}, {
+		desc:      "subject format with dashes",
+		key:       "my-org/my-repo",
+		wantOwner: "my-org",
+		wantRepo:  "my-repo",
+	}, {
+		desc:    "PR URL is not a repo key",
+		key:     "https://github.com/owner/repo/pull/123",
 		wantErr: true,
 	}, {
 		desc:    "empty string",
-		url:     "",
+		key:     "",
+		wantErr: true,
+	}, {
+		desc:    "just owner no repo",
+		key:     "owner",
 		wantErr: true,
 	}} {
 		t.Run(tt.desc, func(t *testing.T) {
-			owner, repo, err := parseRepoURL(tt.url)
+			owner, repo, err := parseRepoKey(tt.key)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expected error, got owner=%q repo=%q", owner, repo)
