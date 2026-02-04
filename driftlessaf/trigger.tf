@@ -43,10 +43,8 @@ module "check-run-workqueue" {
 
   # Filter for check_run events with "completed" action
   filters = [{
-    attributes = {
-      type   = "dev.chainguard.github.check_run"
-      action = "completed"
-    }
+    "type"   = "dev.chainguard.github.check_run"
+    "action" = "completed"
   }]
 
   # Use repository URL as the key since check_run events don't have pullrequesturl
