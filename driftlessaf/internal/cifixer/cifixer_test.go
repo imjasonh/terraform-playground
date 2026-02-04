@@ -110,7 +110,11 @@ func TestRealFileSystemSecurity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Errorf("failed to remove temp dir: %v", err)
+		}
+	}()
 
 	fs := NewRealFileSystem(tmpDir)
 
@@ -145,7 +149,11 @@ func TestCommandRestrictions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Errorf("failed to remove temp dir: %v", err)
+		}
+	}()
 
 	fs := NewRealFileSystem(tmpDir)
 
@@ -273,14 +281,4 @@ func createToolUseBlock(name string, input map[string]any) anthropic.ToolUseBloc
 		Name:  name,
 		Input: inputBytes,
 	}
-}
-
-// normalizeWhitespace normalizes whitespace for comparison.
-func normalizeWhitespace(s string) string {
-	// Trim trailing whitespace from each line and normalize line endings
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimRight(line, " \t")
-	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
 }

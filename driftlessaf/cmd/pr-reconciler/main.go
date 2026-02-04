@@ -657,7 +657,11 @@ func (r *PRReconciler) runCIFixer(ctx context.Context, gh *github.Client, owner,
 	if err != nil {
 		return fmt.Errorf("cloning PR branch: %w", err)
 	}
-	defer clone.Close()
+	defer func() {
+		if err := clone.Close(); err != nil {
+			log.Warnf("failed to close clone: %v", err)
+		}
+	}()
 
 	// Create real filesystem for the clone
 	fs := cifixer.NewRealFileSystem(clone.Dir())

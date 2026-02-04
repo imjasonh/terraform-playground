@@ -63,7 +63,9 @@ func (m *GitManager) ClonePRBranch(ctx context.Context, owner, repo, branch stri
 	// Get auth
 	auth, err := m.authForRemote()
 	if err != nil {
-		os.RemoveAll(dir)
+		if removeErr := os.RemoveAll(dir); removeErr != nil {
+			log.Warnf("failed to clean up temp dir after auth error: %v", removeErr)
+		}
 		return nil, fmt.Errorf("getting auth: %w", err)
 	}
 
@@ -79,14 +81,18 @@ func (m *GitManager) ClonePRBranch(ctx context.Context, owner, repo, branch stri
 		Depth:         50, // Shallow clone for speed
 	})
 	if err != nil {
-		os.RemoveAll(dir)
+		if removeErr := os.RemoveAll(dir); removeErr != nil {
+			log.Warnf("failed to clean up temp dir after clone error: %v", removeErr)
+		}
 		return nil, fmt.Errorf("cloning repository: %w", err)
 	}
 
 	// Get the current HEAD SHA
 	head, err := gitRepo.Head()
 	if err != nil {
-		os.RemoveAll(dir)
+		if removeErr := os.RemoveAll(dir); removeErr != nil {
+			log.Warnf("failed to clean up temp dir after HEAD error: %v", removeErr)
+		}
 		return nil, fmt.Errorf("getting HEAD: %w", err)
 	}
 

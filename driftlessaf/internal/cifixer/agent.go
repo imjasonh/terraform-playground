@@ -46,7 +46,7 @@ func DefaultConfig() AgentConfig {
 func detectGCPProjectID() string {
 	// Try metadata service first (fast on GCP, quick timeout elsewhere)
 	if metadata.OnGCE() {
-		if project, err := metadata.ProjectID(); err == nil && project != "" {
+		if project, err := metadata.ProjectIDWithContext(context.Background()); err == nil && project != "" {
 			return project
 		}
 	}
@@ -72,7 +72,7 @@ func detectGCPRegion() string {
 	// Try metadata service first
 	if metadata.OnGCE() {
 		// Zone is like "us-central1-a", we want "us-central1"
-		if zone, err := metadata.Zone(); err == nil && zone != "" {
+		if zone, err := metadata.ZoneWithContext(context.Background()); err == nil && zone != "" {
 			parts := strings.Split(zone, "-")
 			if len(parts) >= 2 {
 				return strings.Join(parts[:len(parts)-1], "-")
