@@ -1,18 +1,28 @@
 # Litestream on Cloud Storage + Cloud Run
 
-This demonstrates running a Cloud Run service that uses [Litestream](https://litestream.io) to backup a SQLite database to a Cloud Storage bucket.
+This demonstrates running a Cloud Run service that uses the [Litestream VFS](https://litestream.io/guides/vfs/) to read and write a SQLite database directly through a replica in Google Cloud Storage.
 
-It does this by running the Litestream image as a sidecar container in the same pod as the application container, with a shared volume mounted between them.
+## How it works
 
-The application container restores the database from the GCS on startup, and Litestream continuously replicates changes to GCS in the background. Instances can scale to zero, and the database will be persisted across restarts.
+The application imports the Litestream Go library and registers its VFS with SQLite **in-process** using [`psanford/sqlite3vfs`](https://github.com/psanford/sqlite3vfs). There is no sidecar container, no `.so` extension to load, and no restore step on startup. The VFS:
+
+- **Reads** database pages on-demand from GCS, with a local LRU cache
+- **Writes** to a local buffer, then syncs LTX files to GCS on a configurable interval
+- Eliminates cold-start delays from restoring the full database
+
+When running locally (not on GCE), the app uses a plain local SQLite file with no VFS.
+
+## Build requirements
+
+This uses [`mattn/go-sqlite3`](https://github.com/mattn/go-sqlite3), a CGO-based SQLite driver, because the VFS registration requires CGO. The `ko` build is configured with `CGO_ENABLED=1` and uses [zig](https://ziglang.org/) as a cross-compiler (`CC=zig cc -target x86_64-linux-gnu`) to build for Linux from macOS.
+
+The `vfs` build tag is required to compile the Litestream VFS code (`GOFLAGS=-tags=vfs`).
 
 ## Limitations
 
-Multiple writers will probably not work as expected, since each instance will have a separate database file. This is not a problem for read-heavy workloads, but for write-heavy workloads, you may need to use a different solution.
+**Single writer only.** The Litestream VFS write mode uses optimistic conflict detection, not distributed locking. The Cloud Run service is configured with `max_instance_count = 1`. Running multiple writers will result in conflicts.
 
-The database file is restored on instance startup, so cold start times will grow in proportion to the size of the database. There may be exotic ways to mitigate this, but in general in the meantime just try to keep the database small. You may also need to tune the startup probe to allow for longer startup times.
-
-This has been load-tested with up to 5000 qps and 60 concurrent Cloud Run instances each inserting new rows (not updating rows), and it worked mostly as expected. The only errors encountered were due to the database being locked by multiple writers in the same instance ([`SQLITE_BUSY`](https://www.sqlite.org/rescode.html#busy)), and due to Cloud Run not scaling up fast enough. This is not an endorsement of this solution for critical production use cases, your mileage may vary.
+The VFS write buffer is stored on an in-memory `empty_dir` volume, so it is lost when the instance scales to zero. The VFS will rebuild from the GCS replica on the next cold start, fetching pages on-demand rather than requiring a full restore.
 
 ## Why?
 
@@ -36,7 +46,7 @@ Cloud Storage is _really cheap_ -- much cheaper than most alternatives, especial
 - reads (class B operations): $0.04 per 100,000 operations (50,000 monthly operations free)\*
 - writes (class A operations): $0.50 per 100,000 operations (5,000 monthly operations free)
 
-\* Because Litestream only reads and writes to restore and replicate, these operations don't indicate the number of actual reads/writes to the database itself. Reading from the database is a local operation once the data is restored.
+\* Because Litestream replicates at the page level, GCS operation counts don't directly correspond to application-level reads/writes.
 
 When the service is not receiving any requests, you only pay for GCS storage, at a fraction of the cost of other solutions, making this a very cost-effective solution for infrequently-used applications.
 
@@ -45,7 +55,7 @@ Query costs are charged at [Cloud Run rates](https://cloud.google.com/run/pricin
 - CPU: $46.656 per vCPU/month ($62.208 per vCPU/month when only allocated during requests)
 - memory: $5.184 per GB/month ($6.48 per GB/month when only allocated during requests)
 
-These costs are shown in monthly units, but are billed per 100 milliseconds of actual usage. Cloud Run costs include the SQLite queries and your application logic, and Litestream replication usage.
+These costs are shown in monthly units, but are billed per 100 milliseconds of actual usage. Cloud Run costs include the SQLite queries and your application logic.
 
 Since it's just SQLite, this also supports standard SQL operations and semantics. It can be trivially tested locally without access to a cloud instance, or moved to other Litestream-compatible backends like S3.
 
@@ -53,4 +63,4 @@ There are also potentially tenancy benefits to using a separate database for eac
 
 ### Running locally
 
-Since the database is just SQLite, it's very easy to run this locally. Simply `go run ./` and the service will create `db.sqlite` in the current directory. You can browse to http://localhost:8080/ to see the service running, and interact with the database using standard tools.
+Since the database is just SQLite, it's very easy to run this locally. Simply `go run -tags vfs ./` and the service will create `db.sqlite` in the current directory (without VFS — the VFS is only used when running on GCE). You can browse to http://localhost:8080/ to see the service running, and interact with the database using standard tools.

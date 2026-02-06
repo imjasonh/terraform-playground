@@ -1,20 +1,24 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
 	"html/template"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"time"
 
 	"cloud.google.com/go/compute/metadata"
+	"github.com/benbjohnson/litestream"
+	_ "github.com/benbjohnson/litestream/gs" // register "gs" replica client factory
 	"github.com/chainguard-dev/clog"
 	_ "github.com/chainguard-dev/clog/gcp/init"
-	_ "github.com/glebarez/go-sqlite"
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/psanford/sqlite3vfs"
 )
 
 var dbfile = flag.String("file", "db.sqlite", "path to database file")
@@ -23,39 +27,42 @@ func main() {
 	flag.Parse()
 
 	dbfile := *dbfile
+	dsn := dbfile
 
 	if metadata.OnGCE() {
-		if os.Getenv("BUCKET") == "" {
-			clog.Fatal("BUCKET environment variable is required on GCE")
+		replicaURL := os.Getenv("LITESTREAM_REPLICA_URL")
+		if replicaURL == "" {
+			clog.Fatal("LITESTREAM_REPLICA_URL environment variable is required on GCE")
 		}
-		dbfile = "/data/" + dbfile
-		// Before serving requests, restore the database from the latest replica.
-		start := time.Now()
-		cmd := exec.Command("litestream", "restore",
-			"-o", dbfile,
-			fmt.Sprintf("gcs://%s/litestream", os.Getenv("BUCKET")))
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			clog.Fatalf("failed to restore database: %v", err)
+
+		client, err := litestream.NewReplicaClientFromURL(replicaURL)
+		if err != nil {
+			clog.Fatalf("failed to create replica client: %v", err)
 		}
-		clog.Infof("restoring database took %s", time.Since(start))
-	} else {
-		if _, err := os.Stat(dbfile); os.IsNotExist(err) {
-			clog.Infof("creating database file: %s", dbfile)
-			if _, err := os.Create(dbfile); err != nil {
-				clog.Fatalf("failed to create database file: %v", err)
-			}
+		if err := client.Init(context.Background()); err != nil {
+			clog.Fatalf("failed to init replica client: %v", err)
 		}
+
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		vfs := litestream.NewVFS(client, logger)
+		vfs.PollInterval = 1 * time.Second
+		vfs.WriteEnabled = true
+		vfs.WriteSyncInterval = 1 * time.Second
+
+		if bufPath := os.Getenv("LITESTREAM_BUFFER_PATH"); bufPath != "" {
+			vfs.WriteBufferPath = bufPath
+		}
+
+		clog.Infof("registering litestream VFS...")
+		if err := sqlite3vfs.RegisterVFS("litestream", vfs); err != nil {
+			clog.Fatalf("failed to register VFS: %v", err)
+		}
+		clog.Infof("litestream VFS registered")
+
+		dsn = "file:db?vfs=litestream"
 	}
 
-	fi, err := os.Stat(dbfile)
-	if err != nil {
-		clog.Fatalf("failed to stat database: %v", err)
-	}
-	clog.Infof("database size: %d bytes", fi.Size())
-
-	db, err := sql.Open("sqlite", dbfile)
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		clog.Fatalf("failed to open database: %v", err)
 	}
@@ -104,7 +111,7 @@ func getData(db *sql.DB, getVersion bool) (data, error) {
 		}
 	}
 
-	if _, err := db.Exec("insert into test3 (time) values (unixepoch('now','subsec'))"); err != nil {
+	if _, err := db.Exec("insert into test3 (time) values (cast(unixepoch('now','subsec') * 1000 as integer))"); err != nil {
 		return data{}, fmt.Errorf("failed to insert row: %w", err)
 	}
 	rows, err := db.Query("select count(*) from test3")

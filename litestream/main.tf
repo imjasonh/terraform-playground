@@ -17,6 +17,11 @@ provider "google" {
   region  = local.region
 }
 
+provider "google-beta" {
+  project = local.project_id
+  region  = local.region
+}
+
 provider "ko" { repo = "gcr.io/${local.project_id}/litestream/app" }
 
 resource "google_storage_bucket" "bucket" {
@@ -38,7 +43,13 @@ resource "google_storage_bucket_iam_binding" "binding" {
 resource "ko_build" "build" {
   importpath  = "./"
   working_dir = path.module
-  base_image  = "cgr.dev/chainguard/litestream"
+  base_image  = "cgr.dev/chainguard/glibc-dynamic"
+  env = [
+    "CGO_ENABLED=1",
+    "CC=zig cc -target x86_64-linux-gnu",
+    "CXX=zig c++ -target x86_64-linux-gnu",
+    "GOFLAGS=-tags=vfs",
+  ]
 }
 
 resource "google_cloud_run_v2_service" "service" {
@@ -51,12 +62,15 @@ resource "google_cloud_run_v2_service" "service" {
 
   template {
     scaling {
-      // Litestream only supports a single writer replica.
+      // Litestream VFS write mode uses optimistic conflict detection,
+      // not distributed locking. Only a single writer is supported.
       max_instance_count = 1
     }
 
     // Allow max concurrent requests to the single replica.
     max_instance_request_concurrency = 1000
+
+    service_account = google_service_account.sa.email
 
     containers {
       image = ko_build.build.image_ref
@@ -65,17 +79,12 @@ resource "google_cloud_run_v2_service" "service" {
         mount_path = "/data"
       }
       env {
-        name  = "BUCKET"
-        value = google_storage_bucket.bucket.name
+        name  = "LITESTREAM_REPLICA_URL"
+        value = "gs://${google_storage_bucket.bucket.name}/litestream"
       }
-    }
-
-    containers {
-      image = "chainguard/litestream" // Cloud Run can only pull from GCR or Docker Hub. :(
-      args  = ["replicate", "/data/db.sqlite", "gcs://${google_storage_bucket.bucket.name}/litestream"]
-      volume_mounts {
-        name       = "data"
-        mount_path = "/data"
+      env {
+        name  = "LITESTREAM_BUFFER_PATH"
+        value = "/data/db.sqlite"
       }
     }
 
