@@ -6,8 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
-	"log"
-	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -29,6 +27,8 @@ func main() {
 	dbfile := *dbfile
 	dsn := dbfile
 
+	log := clog.FromContext(context.Background())
+
 	if metadata.OnGCE() {
 		replicaURL := os.Getenv("LITESTREAM_REPLICA_URL")
 		if replicaURL == "" {
@@ -43,8 +43,7 @@ func main() {
 			clog.Fatalf("failed to init replica client: %v", err)
 		}
 
-		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-		vfs := litestream.NewVFS(client, logger)
+		vfs := litestream.NewVFS(client, &log.Logger)
 		vfs.PollInterval = 1 * time.Second
 		vfs.WriteEnabled = true
 		vfs.WriteSyncInterval = 1 * time.Second
@@ -99,7 +98,7 @@ func main() {
 			clog.Fatalf("failed to execute template: %v", err)
 		}
 	})
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	clog.Fatal("ListenAndServe", "err", http.ListenAndServe(":8080", nil))
 }
 
 func getData(db *sql.DB, getVersion bool) (data, error) {
