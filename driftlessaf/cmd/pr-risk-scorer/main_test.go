@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -115,30 +116,6 @@ func TestReconcilerDetails_Markdown(t *testing.T) {
 }
 
 func containsSubstring(s, substr string) bool {
-	// Case-insensitive check for simplicity
-	s = toLower(s)
-	substr = toLower(substr)
-	return len(s) >= len(substr) && indexOf(s, substr) >= 0
-}
-
-func toLower(s string) string {
-	result := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			result[i] = c + ('a' - 'A')
-		} else {
-			result[i] = c
-		}
-	}
-	return string(result)
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
+	// Case-insensitive check
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }

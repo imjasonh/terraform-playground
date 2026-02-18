@@ -72,7 +72,7 @@ func DefaultConfig() Config {
 			},
 			{
 				Level:       LevelHigh,
-				Patterns:    []string{"k8s/**", "kubernetes/**", "helm/**", "*.yaml", "*.yml"},
+				Patterns:    []string{"k8s/**/*.yaml", "k8s/**/*.yml", "kubernetes/**/*.yaml", "kubernetes/**/*.yml", "helm/**/*.yaml", "helm/**/*.yml"},
 				Description: "Kubernetes configuration changes can affect service availability",
 			},
 			{
@@ -184,11 +184,16 @@ func (s *Scorer) AssessRisk(ctx context.Context, files []*github.CommitFile) Ass
 				if rule.Level.Priority() > fileRiskLevel.Priority() {
 					fileRiskLevel = rule.Level
 				}
-				if fileRiskLevel.Priority() >= LevelMedium.Priority() {
+				// Track reason for this file
+				if rule.Level.Priority() >= LevelMedium.Priority() {
 					fileRiskReasons[filename] = append(fileRiskReasons[filename], rule.Description)
-					assessment.RiskyFiles = append(assessment.RiskyFiles, filename)
 				}
 			}
+		}
+		
+		// Add to risky files if medium or high risk
+		if fileRiskLevel.Priority() >= LevelMedium.Priority() {
+			assessment.RiskyFiles = append(assessment.RiskyFiles, filename)
 		}
 		
 		// Update overall risk level
