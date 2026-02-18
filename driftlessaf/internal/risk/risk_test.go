@@ -48,24 +48,6 @@ func TestPRContextBind(t *testing.T) {
 	}
 }
 
-func TestFormatFileDiffs(t *testing.T) {
-	diffs := map[string]string{
-		"file1.go": "diff content 1",
-		"file2.go": "diff content 2",
-	}
-
-	result := formatFileDiffs(diffs)
-
-	if result == "" {
-		t.Error("formatted diffs should not be empty")
-	}
-
-	// Check that both files are included
-	if !(contains(result, "file1.go") && contains(result, "file2.go")) {
-		t.Error("formatted diffs should include all filenames")
-	}
-}
-
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) &&
 		(s == substr || (len(s) > len(substr) && indexOf(s, substr) >= 0))

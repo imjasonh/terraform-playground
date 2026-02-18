@@ -35,15 +35,6 @@ func (c *PRContext) Bind(prompt *promptbuilder.Prompt) (*promptbuilder.Prompt, e
 	return prompt.BindXML("pr_context", c)
 }
 
-func formatFileDiffs(diffs map[string]string) string {
-	var result string
-	for filename, diff := range diffs {
-		result += "\n--- " + filename + " ---\n"
-		result += diff + "\n"
-	}
-	return result
-}
-
 // RiskAssessment is the structured result from the risk assessment agent.
 type RiskAssessment struct {
 	RiskLevel   string   `json:"risk_level" jsonschema:"description=Risk level: low|medium|high,enum=low,enum=medium,enum=high,required"`
