@@ -90,7 +90,7 @@ func DefaultConfig() Config {
 				Patterns:    []string{"**/migrations/**", "**/*migration*"},
 				Description: "Database migrations can affect data integrity and require careful review",
 			},
-			
+
 			// Medium risk: Important but less critical changes
 			{
 				Level:       LevelMedium,

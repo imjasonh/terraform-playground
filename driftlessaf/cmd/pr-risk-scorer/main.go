@@ -73,9 +73,9 @@ func (d ReconcilerDetails) Markdown() string {
 }
 
 type envConfig struct {
-	Port             int    `env:"PORT, default=8080"`
-	GithubAppID      int64  `env:"GITHUB_APP_ID, required"`
-	GithubPrivateKey string `env:"GITHUB_PRIVATE_KEY, required"`
+	Port             int    `env:"PORT,default=8080"`
+	GithubAppID      int64  `env:"GITHUB_APP_ID,required"`
+	GithubPrivateKey string `env:"GITHUB_PRIVATE_KEY,required"`
 }
 
 func main() {
