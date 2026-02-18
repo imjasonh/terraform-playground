@@ -41,7 +41,7 @@ func (d ReconcilerDetails) Markdown() string {
 	var sb strings.Builder
 
 	sb.WriteString("## Risk Assessment\n\n")
-	
+
 	// Display risk level with emoji
 	riskEmoji := "✅"
 	if d.RiskLevel == "high" {
@@ -49,9 +49,9 @@ func (d ReconcilerDetails) Markdown() string {
 	} else if d.RiskLevel == "medium" {
 		riskEmoji = "⚠️"
 	}
-	
+
 	sb.WriteString(fmt.Sprintf("%s **Risk Level: %s**\n\n", riskEmoji, strings.ToUpper(d.RiskLevel)))
-	
+
 	if d.Confidence > 0 {
 		sb.WriteString(fmt.Sprintf("*Confidence: %.0f%%*\n\n", d.Confidence*100))
 	}
@@ -328,16 +328,16 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 	}
 
 	// Execute the risk assessment agent
-	log.Infof("running risk assessment agent on %d files (%d additions, %d deletions)", 
+	log.Infof("running risk assessment agent on %d files (%d additions, %d deletions)",
 		len(filesChanged), additions, deletions)
-	
+
 	assessment, err := r.agent.Execute(ctx, prContext, nil)
 	if err != nil {
 		log.Errorf("risk assessment failed: %v", err)
 		return nil, fmt.Errorf("risk assessment: %w", err)
 	}
 
-	log.Infof("risk assessment complete: level=%s confidence=%.2f", 
+	log.Infof("risk assessment complete: level=%s confidence=%.2f",
 		assessment.RiskLevel, assessment.Confidence)
 
 	details := ReconcilerDetails{
@@ -374,7 +374,7 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 	status := "completed"
 	conclusion := "success"
 	summary := fmt.Sprintf("Risk level: %s", assessment.RiskLevel)
-	
+
 	if assessment.RiskLevel == "high" {
 		conclusion = "failure"
 		summary = "⚠️ High risk changes detected - careful review required"

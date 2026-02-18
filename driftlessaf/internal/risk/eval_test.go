@@ -86,15 +86,15 @@ func TestRiskAssessmentEvals(t *testing.T) {
 }
 
 type evalResult struct {
-	Name             string
-	Success          bool
-	Score            float64
-	Reasoning        string
-	LevelMatch       bool
-	ActualLevel      string
-	ExpectedLevel    string
-	AgentAssessment  *RiskAssessment
-	Error            error
+	Name            string
+	Success         bool
+	Score           float64
+	Reasoning       string
+	LevelMatch      bool
+	ActualLevel     string
+	ExpectedLevel   string
+	AgentAssessment *RiskAssessment
+	Error           error
 }
 
 func runSingleEval(t *testing.T, ctx context.Context, agent claudeexecutor.Interface[*PRContext, *RiskAssessment], judgeInstance judge.Interface, tc EvalTestCase) evalResult {
@@ -126,9 +126,9 @@ func runSingleEval(t *testing.T, ctx context.Context, agent claudeexecutor.Inter
 	actualAnswer := formatAgentAssessment(assessment)
 
 	judgement, err := judgeInstance.Judge(ctx, &judge.Request{
-		Mode:            judge.StandaloneMode,
-		ActualAnswer:    actualAnswer,
-		Criterion:       tc.Criterion,
+		Mode:         judge.StandaloneMode,
+		ActualAnswer: actualAnswer,
+		Criterion:    tc.Criterion,
 	})
 
 	if err != nil {
@@ -153,21 +153,21 @@ func formatAgentAssessment(assessment *RiskAssessment) string {
 	sb.WriteString(fmt.Sprintf("Risk Level: %s\n", assessment.RiskLevel))
 	sb.WriteString(fmt.Sprintf("Confidence: %.2f\n", assessment.Confidence))
 	sb.WriteString(fmt.Sprintf("\nReasoning:\n%s\n", assessment.Reasoning))
-	
+
 	if len(assessment.RiskFactors) > 0 {
 		sb.WriteString("\nRisk Factors:\n")
 		for _, factor := range assessment.RiskFactors {
 			sb.WriteString(fmt.Sprintf("- %s\n", factor))
 		}
 	}
-	
+
 	if len(assessment.RiskyFiles) > 0 {
 		sb.WriteString("\nRisky Files:\n")
 		for _, file := range assessment.RiskyFiles {
 			sb.WriteString(fmt.Sprintf("- %s\n", file))
 		}
 	}
-	
+
 	return sb.String()
 }
 
@@ -177,17 +177,17 @@ func formatExpectedAssessment(tc EvalTestCase) string {
 
 func printEvalSummary(t *testing.T, results []evalResult) {
 	t.Helper()
-	
+
 	totalTests := len(results)
 	passed := 0
 	levelMatches := 0
-	
+
 	var totalScore float64
-	
+
 	t.Log("\n" + strings.Repeat("=", 80))
 	t.Log("EVALUATION SUMMARY")
 	t.Log(strings.Repeat("=", 80))
-	
+
 	for _, r := range results {
 		if r.Success {
 			passed++
@@ -196,35 +196,35 @@ func printEvalSummary(t *testing.T, results []evalResult) {
 			levelMatches++
 		}
 		totalScore += r.Score
-		
+
 		status := "❌ FAIL"
 		if r.Success {
 			status = "✅ PASS"
 		}
-		
+
 		levelStatus := "❌"
 		if r.LevelMatch {
 			levelStatus = "✅"
 		}
-		
+
 		t.Logf("%s | Score: %.2f | %s Level: %s (expected %s) | %s",
 			status, r.Score, levelStatus, r.ActualLevel, r.ExpectedLevel, r.Name)
-		
+
 		if r.Error != nil {
 			t.Logf("  Error: %v", r.Error)
 		}
 	}
-	
+
 	avgScore := totalScore / float64(totalTests)
 	passRate := float64(passed) / float64(totalTests) * 100
 	levelMatchRate := float64(levelMatches) / float64(totalTests) * 100
-	
+
 	t.Log(strings.Repeat("=", 80))
 	t.Logf("Tests Passed: %d/%d (%.1f%%)", passed, totalTests, passRate)
 	t.Logf("Level Matches: %d/%d (%.1f%%)", levelMatches, totalTests, levelMatchRate)
 	t.Logf("Average Score: %.2f", avgScore)
 	t.Log(strings.Repeat("=", 80))
-	
+
 	// Write results to file for tracking
 	if err := writeResultsToFile(results); err != nil {
 		t.Logf("Warning: failed to write results to file: %v", err)
@@ -237,7 +237,7 @@ func writeResultsToFile(results []evalResult) error {
 		return err
 	}
 	defer f.Close()
-	
+
 	encoder := json.NewEncoder(f)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(results)
