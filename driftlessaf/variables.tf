@@ -60,3 +60,16 @@ variable "ci_fixer_region" {
   description = "GCP region for Vertex AI Claude API calls."
   default     = "us-east5"
 }
+
+# Risk Scorer configuration
+variable "risk_scorer_model" {
+  type        = string
+  description = "The Claude model to use for risk assessment."
+  default     = "claude-sonnet-4@20250514"
+}
+
+variable "risk_scorer_region" {
+  type        = string
+  description = "GCP region for Vertex AI Claude API calls."
+  default     = "us-east5"
+}
