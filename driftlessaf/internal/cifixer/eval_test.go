@@ -212,15 +212,15 @@ func normalizeWhitespaceForEval(s string) string {
 func formatAgentResult(fs *MockFileSystem, result *CIFixResult) string {
 	var sb strings.Builder
 	sb.WriteString("Agent Result:\n")
-	sb.WriteString(fmt.Sprintf("Success: %v\n", result.Success))
-	sb.WriteString(fmt.Sprintf("Files Changed: %v\n", result.FilesChanged))
-	sb.WriteString(fmt.Sprintf("Commit Message: %s\n", result.CommitMessage))
-	sb.WriteString(fmt.Sprintf("Reasoning: %s\n", result.Reasoning))
+	fmt.Fprintf(&sb, "Success: %v\n", result.Success)
+	fmt.Fprintf(&sb, "Files Changed: %v\n", result.FilesChanged)
+	fmt.Fprintf(&sb, "Commit Message: %s\n", result.CommitMessage)
+	fmt.Fprintf(&sb, "Reasoning: %s\n", result.Reasoning)
 	sb.WriteString("\nFile Contents:\n")
 
 	for _, path := range result.FilesChanged {
 		content, _ := fs.ReadFile(path)
-		sb.WriteString(fmt.Sprintf("--- %s ---\n%s\n", path, content))
+		fmt.Fprintf(&sb, "--- %s ---\n%s\n", path, content)
 	}
 
 	return sb.String()
@@ -231,7 +231,7 @@ func formatExpectedResult(expected map[string]string) string {
 	sb.WriteString("Expected Result:\n")
 
 	for path, content := range expected {
-		sb.WriteString(fmt.Sprintf("--- %s ---\n%s\n", path, content))
+		fmt.Fprintf(&sb, "--- %s ---\n%s\n", path, content)
 	}
 
 	return sb.String()

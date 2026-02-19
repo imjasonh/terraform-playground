@@ -53,12 +53,12 @@ func (d ReconcilerDetails) Markdown() string {
 	// Auto-labeler section
 	if d.FilesAnalyzed > 0 {
 		sb.WriteString("## Auto-Labeler\n\n")
-		sb.WriteString(fmt.Sprintf("Analyzed **%d files** with **%d lines** changed.\n\n", d.FilesAnalyzed, d.TotalChanges))
+		fmt.Fprintf(&sb, "Analyzed **%d files** with **%d lines** changed.\n\n", d.FilesAnalyzed, d.TotalChanges)
 
 		if len(d.LabelsApplied) > 0 {
 			sb.WriteString("### Labels Applied\n\n")
 			for _, label := range d.LabelsApplied {
-				sb.WriteString(fmt.Sprintf("- `%s`\n", label))
+				fmt.Fprintf(&sb, "- `%s`\n", label)
 			}
 			sb.WriteString("\n")
 		} else {
@@ -73,13 +73,13 @@ func (d ReconcilerDetails) Markdown() string {
 		if d.CIFixPending {
 			// CI is still running, waiting to evaluate
 			sb.WriteString("⏳ **Waiting for CI to complete**\n\n")
-			sb.WriteString(fmt.Sprintf("%s\n\n", d.CIFixReasoning))
+			fmt.Fprintf(&sb, "%s\n\n", d.CIFixReasoning)
 		} else if d.CIFixNeedsHuman {
 			// Agent determined human intervention is needed
 			sb.WriteString("⚠️ **Human intervention requested**\n\n")
-			sb.WriteString(fmt.Sprintf("Reason: %s\n\n", d.CIFixReasoning))
+			fmt.Fprintf(&sb, "Reason: %s\n\n", d.CIFixReasoning)
 			if d.CIFixTurns > 0 {
-				sb.WriteString(fmt.Sprintf("Turns attempted: %d\n\n", d.CIFixTurns))
+				fmt.Fprintf(&sb, "Turns attempted: %d\n\n", d.CIFixTurns)
 			}
 		} else if d.CIFixSuccess {
 			// CI is passing
@@ -89,14 +89,14 @@ func (d ReconcilerDetails) Markdown() string {
 				if len(d.CIFixFiles) > 0 {
 					sb.WriteString("### Files Modified\n\n")
 					for _, f := range d.CIFixFiles {
-						sb.WriteString(fmt.Sprintf("- `%s`\n", f))
+						fmt.Fprintf(&sb, "- `%s`\n", f)
 					}
 					sb.WriteString("\n")
 				}
 				if d.CIFixCommit != "" {
-					sb.WriteString(fmt.Sprintf("Commit: `%s`\n\n", d.CIFixCommit))
+					fmt.Fprintf(&sb, "Commit: `%s`\n\n", d.CIFixCommit)
 				}
-				sb.WriteString(fmt.Sprintf("Turns used: %d\n\n", d.CIFixTurns))
+				fmt.Fprintf(&sb, "Turns used: %d\n\n", d.CIFixTurns)
 			} else {
 				// CI was already passing, no fixes needed
 				sb.WriteString("✅ **CI is passing**\n\n")
@@ -105,9 +105,9 @@ func (d ReconcilerDetails) Markdown() string {
 		} else if d.CIFixAttempted {
 			// We attempted fixes but CI still failing
 			sb.WriteString("❌ **Could not fix CI failure**\n\n")
-			sb.WriteString(fmt.Sprintf("Reason: %s\n\n", d.CIFixReasoning))
+			fmt.Fprintf(&sb, "Reason: %s\n\n", d.CIFixReasoning)
 			if d.CIFixTurns > 0 {
-				sb.WriteString(fmt.Sprintf("Turns attempted: %d\n\n", d.CIFixTurns))
+				fmt.Fprintf(&sb, "Turns attempted: %d\n\n", d.CIFixTurns)
 			}
 		}
 	}
@@ -734,8 +734,8 @@ func (r *PRReconciler) getCheckLogs(ctx context.Context, gh *github.Client, owne
 
 	var sb strings.Builder
 	for _, a := range annotations {
-		sb.WriteString(fmt.Sprintf("%s:%d: %s - %s\n",
-			a.GetPath(), a.GetStartLine(), a.GetAnnotationLevel(), a.GetMessage()))
+		fmt.Fprintf(&sb, "%s:%d: %s - %s\n",
+			a.GetPath(), a.GetStartLine(), a.GetAnnotationLevel(), a.GetMessage())
 	}
 
 	// Also try to get the check run output
