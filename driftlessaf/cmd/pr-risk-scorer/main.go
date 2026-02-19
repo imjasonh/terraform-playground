@@ -43,17 +43,20 @@ func (d ReconcilerDetails) Markdown() string {
 	sb.WriteString("## Risk Assessment\n\n")
 
 	// Display risk level with emoji
-	riskEmoji := "✅"
-	if d.RiskLevel == "high" {
+	var riskEmoji string
+	switch d.RiskLevel {
+	case "high":
 		riskEmoji = "🚨"
-	} else if d.RiskLevel == "medium" {
+	case "medium":
 		riskEmoji = "⚠️"
+	default:
+		riskEmoji = "✅"
 	}
 
-	sb.WriteString(fmt.Sprintf("%s **Risk Level: %s**\n\n", riskEmoji, strings.ToUpper(d.RiskLevel)))
+	fmt.Fprintf(&sb, "%s **Risk Level: %s**\n\n", riskEmoji, strings.ToUpper(d.RiskLevel))
 
 	if d.Confidence > 0 {
-		sb.WriteString(fmt.Sprintf("*Confidence: %.0f%%*\n\n", d.Confidence*100))
+		fmt.Fprintf(&sb, "*Confidence: %.0f%%*\n\n", d.Confidence*100)
 	}
 
 	if d.Reasoning != "" {
@@ -64,7 +67,7 @@ func (d ReconcilerDetails) Markdown() string {
 	if len(d.RiskFactors) > 0 {
 		sb.WriteString("### Risk Factors\n\n")
 		for _, factor := range d.RiskFactors {
-			sb.WriteString(fmt.Sprintf("- %s\n", factor))
+			fmt.Fprintf(&sb, "- %s\n", factor)
 		}
 		sb.WriteString("\n")
 	}
@@ -72,7 +75,7 @@ func (d ReconcilerDetails) Markdown() string {
 	if len(d.RiskyFiles) > 0 {
 		sb.WriteString("### High-Risk Files\n\n")
 		for _, file := range d.RiskyFiles {
-			sb.WriteString(fmt.Sprintf("- `%s`\n", file))
+			fmt.Fprintf(&sb, "- `%s`\n", file)
 		}
 		sb.WriteString("\n")
 	}
@@ -372,16 +375,17 @@ func (r *PRReconciler) Process(ctx context.Context, req *workqueue.ProcessReques
 
 	// Determine conclusion and status based on risk level
 	status := "completed"
-	conclusion := "success"
-	summary := fmt.Sprintf("Risk level: %s", assessment.RiskLevel)
+	var conclusion, summary string
 
-	if assessment.RiskLevel == "high" {
+	switch assessment.RiskLevel {
+	case "high":
 		conclusion = "failure"
 		summary = "⚠️ High risk changes detected - careful review required"
-	} else if assessment.RiskLevel == "medium" {
+	case "medium":
 		conclusion = "neutral"
 		summary = "Medium risk changes - review recommended"
-	} else {
+	default:
+		conclusion = "success"
 		summary = "Low risk changes"
 	}
 

@@ -150,26 +150,30 @@ func runSingleEval(t *testing.T, ctx context.Context, agent claudeexecutor.Inter
 
 func formatAgentAssessment(assessment *RiskAssessment) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Risk Level: %s\n", assessment.RiskLevel))
-	sb.WriteString(fmt.Sprintf("Confidence: %.2f\n", assessment.Confidence))
-	sb.WriteString(fmt.Sprintf("\nReasoning:\n%s\n", assessment.Reasoning))
+	fmt.Fprintf(&sb, "Risk Level: %s\n", assessment.RiskLevel)
+	fmt.Fprintf(&sb, "Confidence: %.2f\n", assessment.Confidence)
+	fmt.Fprintf(&sb, "\nReasoning:\n%s\n", assessment.Reasoning)
 
 	if len(assessment.RiskFactors) > 0 {
 		sb.WriteString("\nRisk Factors:\n")
 		for _, factor := range assessment.RiskFactors {
-			sb.WriteString(fmt.Sprintf("- %s\n", factor))
+			fmt.Fprintf(&sb, "- %s\n", factor)
 		}
 	}
 
 	if len(assessment.RiskyFiles) > 0 {
 		sb.WriteString("\nRisky Files:\n")
 		for _, file := range assessment.RiskyFiles {
-			sb.WriteString(fmt.Sprintf("- %s\n", file))
+			fmt.Fprintf(&sb, "- %s\n", file)
 		}
 	}
 
 	return sb.String()
 }
+
+// formatExpectedAssessment formats an expected assessment for comparison.
+// Kept for potential future use in golden mode testing.
+var _ = formatExpectedAssessment
 
 func formatExpectedAssessment(tc EvalTestCase) string {
 	return fmt.Sprintf("Expected Risk Level: %s\n\nDescription: %s", tc.ExpectedLevel, tc.Description)
@@ -236,7 +240,11 @@ func writeResultsToFile(results []evalResult) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	encoder := json.NewEncoder(f)
 	encoder.SetIndent("", "  ")
