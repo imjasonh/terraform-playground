@@ -45,8 +45,6 @@ func main() {
 
 		vfs := litestream.NewVFS(client, log.Base())
 		vfs.PollInterval = 1 * time.Second
-		// Serve reads on-demand from the replica; do not hydrate the full DB locally.
-		vfs.HydrationEnabled = false
 		vfs.WriteEnabled = true
 		vfs.WriteSyncInterval = 1 * time.Second
 
