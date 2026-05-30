@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"cloud.google.com/go/compute/metadata"
@@ -21,15 +22,32 @@ import (
 
 var dbfile = flag.String("file", "db.sqlite", "path to database file")
 
+func writeEnabled() bool {
+	v := os.Getenv("LITESTREAM_WRITE_ENABLED")
+	if v == "" {
+		return false
+	}
+	enabled, err := strconv.ParseBool(v)
+	if err != nil {
+		clog.Fatalf("invalid LITESTREAM_WRITE_ENABLED %q: %v", v, err)
+	}
+	return enabled
+}
+
 func main() {
 	flag.Parse()
 
 	dbfile := *dbfile
 	dsn := dbfile
+	onGCE := metadata.OnGCE()
+	writer := writeEnabled()
+	serveReads := !onGCE || !writer
+	serveWrites := !onGCE || writer
 
 	log := clog.FromContext(context.Background())
+	clog.Infof("litestream routes", "on_gce", onGCE, "writer", writer, "serve_reads", serveReads, "serve_writes", serveWrites)
 
-	if metadata.OnGCE() {
+	if onGCE {
 		replicaURL := os.Getenv("LITESTREAM_REPLICA_URL")
 		if replicaURL == "" {
 			clog.Fatal("LITESTREAM_REPLICA_URL environment variable is required on GCE")
@@ -43,22 +61,23 @@ func main() {
 			clog.Fatalf("failed to init replica client: %v", err)
 		}
 
-		vfs := litestream.NewVFS(client, &log.Logger)
+		vfs := litestream.NewVFS(client, log.Base())
 		vfs.PollInterval = 1 * time.Second
-		vfs.WriteEnabled = true
-		vfs.WriteSyncInterval = 1 * time.Second
-
-		if bufPath := os.Getenv("LITESTREAM_BUFFER_PATH"); bufPath != "" {
-			vfs.WriteBufferPath = bufPath
+		vfs.WriteEnabled = writer
+		if writer {
+			vfs.WriteSyncInterval = 1 * time.Second
+			if bufPath := os.Getenv("LITESTREAM_BUFFER_PATH"); bufPath != "" {
+				vfs.WriteBufferPath = bufPath
+			}
 		}
 
-		clog.Infof("registering litestream VFS...")
+		clog.Infof("registering litestream VFS...", "write_enabled", writer)
 		if err := sqlite3vfs.RegisterVFS("litestream", vfs); err != nil {
 			clog.Fatalf("failed to register VFS: %v", err)
 		}
 		clog.Infof("litestream VFS registered")
 
-		dsn = "file:db?vfs=litestream"
+		dsn = "file:db?vfs=litestream&_busy_timeout=5000"
 	}
 
 	db, err := sql.Open("sqlite3", dsn)
@@ -67,65 +86,108 @@ func main() {
 	}
 	defer db.Close()
 
-	if _, err := db.Exec("create table if not exists test3 (time integer primary key)"); err != nil {
-		clog.Fatalf("failed to create table: %v", err)
+	if serveWrites {
+		if onGCE || !dbExists(dbfile) {
+			if _, err := db.Exec("create table if not exists test3 (time integer primary key)"); err != nil {
+				clog.Fatalf("failed to create table: %v", err)
+			}
+		}
 	}
 
 	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no favicon", http.StatusNotFound) })
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		data, err := getData(db, true)
-		if err != nil {
-			clog.Fatalf("failed to get data: %v", err)
-		}
-		if err := page.Execute(w, data); err != nil {
-			clog.Fatalf("failed to execute template: %v", err)
-		}
-	})
-	http.HandleFunc("/click", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		data, err := getData(db, false)
-		if err != nil {
-			clog.Fatalf("failed to get data: %v", err)
-		}
-		if err := div.Execute(w, data); err != nil {
-			clog.Fatalf("failed to execute template: %v", err)
-		}
-	})
+
+	if serveReads {
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			data, err := readPageData(db)
+			if err != nil {
+				if onGCE {
+					clog.Errorf("failed to read page data: %v", err)
+					http.Error(w, "internal server error", http.StatusInternalServerError)
+					return
+				}
+				clog.Fatalf("failed to read page data: %v", err)
+			}
+			if err := page.Execute(w, data); err != nil {
+				if onGCE {
+					clog.Errorf("failed to execute template: %v", err)
+					http.Error(w, "internal server error", http.StatusInternalServerError)
+					return
+				}
+				clog.Fatalf("failed to execute template: %v", err)
+			}
+		})
+	}
+
+	if serveWrites {
+		http.HandleFunc("/click", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			data, err := incrementAndCount(db)
+			if err != nil {
+				if onGCE {
+					clog.Errorf("failed to increment: %v", err)
+					http.Error(w, "internal server error", http.StatusInternalServerError)
+					return
+				}
+				clog.Fatalf("failed to increment: %v", err)
+			}
+			if err := div.Execute(w, data); err != nil {
+				if onGCE {
+					clog.Errorf("failed to execute template: %v", err)
+					http.Error(w, "internal server error", http.StatusInternalServerError)
+					return
+				}
+				clog.Fatalf("failed to execute template: %v", err)
+			}
+		})
+	}
+
 	clog.Fatal("ListenAndServe", "err", http.ListenAndServe(":8080", nil))
 }
 
-func getData(db *sql.DB, getVersion bool) (data, error) {
+func readPageData(db *sql.DB) (data, error) {
 	var version string
-	if getVersion {
-		row := db.QueryRow("select sqlite_version()")
-		if err := row.Scan(&version); err != nil {
-			return data{}, fmt.Errorf("failed to query database version: %w", err)
-		}
+	row := db.QueryRow("select sqlite_version()")
+	if err := row.Scan(&version); err != nil {
+		return data{}, fmt.Errorf("failed to query database version: %w", err)
 	}
 
+	count, err := queryCount(db)
+	if err != nil {
+		return data{}, err
+	}
+	return data{Version: version, Count: count}, nil
+}
+
+func incrementAndCount(db *sql.DB) (data, error) {
 	if _, err := db.Exec("insert into test3 (time) values (cast(unixepoch('now','subsec') * 1000 as integer))"); err != nil {
 		return data{}, fmt.Errorf("failed to insert row: %w", err)
 	}
-	rows, err := db.Query("select count(*) from test3")
+	count, err := queryCount(db)
 	if err != nil {
-		return data{}, fmt.Errorf("failed to query rows: %w", err)
+		return data{}, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var count int
-		if err := rows.Scan(&count); err != nil {
-			return data{}, fmt.Errorf("failed to scan row: %w", err)
-		}
-		return data{Version: version, Count: count}, nil
+	return data{Count: count}, nil
+}
+
+func dbExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func queryCount(db *sql.DB) (int, error) {
+	row := db.QueryRow("select count(*) from test3")
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to query count: %w", err)
 	}
-	return data{}, fmt.Errorf("failed to get count")
+	return count, nil
 }
 
 type data struct {

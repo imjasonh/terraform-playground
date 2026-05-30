@@ -2,14 +2,19 @@
 
 terraform {
   required_providers {
-    ko  = { source = "ko-build/ko" }
+    google = {
+      source  = "hashicorp/google"
+      version = ">= 5.0"
+    }
+    ko = { source = "ko-build/ko" }
     oci = { source = "chainguard-dev/oci" }
   }
 }
 
 locals {
-  project_id = "jason-chainguard"
-  region     = "us-central1"
+  project_id  = "jason-chainguard"
+  region      = "us-central1"
+  replica_url = "gs://${google_storage_bucket.bucket.name}/litestream"
 }
 
 provider "google" {
@@ -52,23 +57,51 @@ resource "ko_build" "build" {
   ]
 }
 
-resource "google_cloud_run_v2_service" "service" {
-  provider = google-beta // for empty_dir
+resource "google_cloud_run_v2_service" "reader" {
+  provider = google-beta
 
-  name         = "litestream"
+  name         = "litestream-reader"
   location     = local.region
   launch_stage = "BETA"
   ingress      = "INGRESS_TRAFFIC_ALL"
 
   template {
     scaling {
-      // Litestream VFS write mode uses optimistic conflict detection,
-      // not distributed locking. Only a single writer is supported.
+      max_instance_count = 10
+    }
+
+    max_instance_request_concurrency = 1000
+
+    service_account = google_service_account.sa.email
+
+    containers {
+      image = ko_build.build.image_ref
+      env {
+        name  = "LITESTREAM_REPLICA_URL"
+        value = local.replica_url
+      }
+      env {
+        name  = "LITESTREAM_WRITE_ENABLED"
+        value = "false"
+      }
+    }
+  }
+}
+
+resource "google_cloud_run_v2_service" "writer" {
+  provider = google-beta // for empty_dir
+
+  name         = "litestream-writer"
+  location     = local.region
+  launch_stage = "BETA"
+  ingress      = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    scaling {
       max_instance_count = 1
     }
 
-    // Allow max concurrent requests to the single replica.
-    max_instance_request_concurrency = 1000
+    max_instance_request_concurrency = 250
 
     service_account = google_service_account.sa.email
 
@@ -80,7 +113,11 @@ resource "google_cloud_run_v2_service" "service" {
       }
       env {
         name  = "LITESTREAM_REPLICA_URL"
-        value = "gs://${google_storage_bucket.bucket.name}/litestream"
+        value = local.replica_url
+      }
+      env {
+        name  = "LITESTREAM_WRITE_ENABLED"
+        value = "true"
       }
       env {
         name  = "LITESTREAM_BUFFER_PATH"
@@ -98,12 +135,21 @@ resource "google_cloud_run_v2_service" "service" {
   }
 }
 
-// Allow all users to invoke the service
-resource "google_cloud_run_v2_service_iam_member" "public" {
-  name   = google_cloud_run_v2_service.service.name
-  role   = "roles/run.invoker"
-  member = "allUsers"
+resource "google_cloud_run_v2_service_iam_member" "reader_public" {
+  name     = google_cloud_run_v2_service.reader.name
+  location = google_cloud_run_v2_service.reader.location
+  role     = "roles/run.invoker"
+  member   = "allUsers"
 }
 
-output "url" { value = google_cloud_run_v2_service.service.uri }
+resource "google_cloud_run_v2_service_iam_member" "writer_public" {
+  name     = google_cloud_run_v2_service.writer.name
+  location = google_cloud_run_v2_service.writer.location
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+output "reader_url" { value = google_cloud_run_v2_service.reader.uri }
+output "writer_url" { value = google_cloud_run_v2_service.writer.uri }
+output "lb_url" { value = "http://${google_compute_global_address.litestream.address}" }
 output "app-image" { value = ko_build.build.image_ref }

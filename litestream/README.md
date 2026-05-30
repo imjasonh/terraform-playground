@@ -1,6 +1,12 @@
 # Litestream on Cloud Storage + Cloud Run
 
-This demonstrates running a Cloud Run service that uses the [Litestream VFS](https://litestream.io/guides/vfs/) to read and write a SQLite database directly through a replica in Google Cloud Storage.
+This demonstrates running Cloud Run services that use the [Litestream VFS](https://litestream.io/guides/vfs/) to read and write a SQLite database directly through a replica in Google Cloud Storage.
+
+Production traffic uses two services plus an HTTP load balancer:
+
+- **`litestream-reader`** — read-only VFS (`LITESTREAM_WRITE_ENABLED=false`), serves `GET /`, scales out (up to 10 instances).
+- **`litestream-writer`** — write-enabled VFS, serves `POST /click` only, single instance.
+- **HTTP load balancer** — routes `/click` to the writer and all other paths to the reader so htmx can use relative URLs on one hostname (`lb_url` output).
 
 ## How it works
 
@@ -18,9 +24,23 @@ This uses [`mattn/go-sqlite3`](https://github.com/mattn/go-sqlite3), a CGO-based
 
 The `vfs` build tag is required to compile the Litestream VFS code (`GOFLAGS=-tags=vfs`).
 
+## Environment variables
+
+| Variable | Reader | Writer |
+|----------|--------|--------|
+| `LITESTREAM_REPLICA_URL` | required | required |
+| `LITESTREAM_WRITE_ENABLED` | `false` | `true` |
+| `LITESTREAM_BUFFER_PATH` | — | path for write buffer (in-memory volume) |
+
+After `terraform apply`, open the **`lb_url`** output for the UI. Direct `reader_url` / `writer_url` remain available for debugging.
+
+Deploy the **writer** at least once before readers on a fresh bucket so the schema exists in the replica.
+
 ## Limitations
 
-**Single writer only.** The Litestream VFS write mode uses optimistic conflict detection, not distributed locking. The Cloud Run service is configured with `max_instance_count = 1`. Running multiple writers will result in conflicts.
+**Single writer only.** The Litestream VFS write mode uses optimistic conflict detection, not distributed locking. Only `litestream-writer` may have `LITESTREAM_WRITE_ENABLED=true`. Running multiple writers against the same replica will result in conflicts.
+
+Reader counts may lag writes by about the VFS poll interval plus the writer sync interval (both default to 1 second).
 
 The VFS write buffer is stored on an in-memory `empty_dir` volume, so it is lost when the instance scales to zero. The VFS will rebuild from the GCS replica on the next cold start, fetching pages on-demand rather than requiring a full restore.
 
@@ -63,4 +83,4 @@ There are also potentially tenancy benefits to using a separate database for eac
 
 ### Running locally
 
-Since the database is just SQLite, it's very easy to run this locally. Simply `go run -tags vfs ./` and the service will create `db.sqlite` in the current directory (without VFS — the VFS is only used when running on GCE). You can browse to http://localhost:8080/ to see the service running, and interact with the database using standard tools.
+Since the database is just SQLite, it's very easy to run this locally. `go run -tags vfs ./` starts a single process with both `GET /` and `POST /click` (no VFS on laptop — VFS is only used on GCE). Browse to http://localhost:8080/.
