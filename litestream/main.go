@@ -43,8 +43,10 @@ func main() {
 			clog.Fatalf("failed to init replica client: %v", err)
 		}
 
-		vfs := litestream.NewVFS(client, &log.Logger)
+		vfs := litestream.NewVFS(client, log.Base())
 		vfs.PollInterval = 1 * time.Second
+		// Serve reads on-demand from the replica; do not hydrate the full DB locally.
+		vfs.HydrationEnabled = false
 		vfs.WriteEnabled = true
 		vfs.WriteSyncInterval = 1 * time.Second
 

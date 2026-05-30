@@ -1,10 +1,10 @@
 module github.com/imjasonh/terraform-playground/litestream
 
-go 1.24.1
+go 1.25.0
 
 require (
 	cloud.google.com/go/compute/metadata v0.3.0
-	github.com/benbjohnson/litestream v0.5.7
+	github.com/benbjohnson/litestream v0.5.11
 	github.com/chainguard-dev/clog v1.3.1
 	github.com/mattn/go-sqlite3 v1.14.33
 	github.com/psanford/sqlite3vfs v0.0.0-20251127171934-4e34e03a991a
@@ -30,6 +30,7 @@ require (
 	github.com/hablullah/go-juliandays v1.0.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/jalaali/go-jalaali v0.0.0-20210801064154-80525e88d958 // indirect
+	github.com/lmittmann/tint v1.1.3 // indirect
 	github.com/magefile/mage v1.14.0 // indirect
 	github.com/markusmobius/go-dateparser v1.2.4 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
