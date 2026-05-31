@@ -6,14 +6,7 @@ const READ_ORIGINS = [
   'https://read.amazon.de',
 ];
 
-/** @type {Record<string, string>} */
-let amazonOrigins = ['https://www.amazon.com'];
-
-/** @type {{
- *   ubid: string; at: string; xMain: string; sid: string; sessionId: string;
- *   deviceToken: string; deviceType: string; amazonDomain: string;
- * }} */
-let extractedTokens = {
+const EMPTY_TOKENS = {
   ubid: '',
   at: '',
   xMain: '',
@@ -24,10 +17,49 @@ let extractedTokens = {
   amazonDomain: 'amazon.com',
 };
 
+/** @type {typeof EMPTY_TOKENS} */
+let extractedTokens = { ...EMPTY_TOKENS };
+
 function resolveAmazonBase() {
   return extractedTokens.amazonDomain.startsWith('http')
     ? extractedTokens.amazonDomain
     : `https://www.${extractedTokens.amazonDomain}`;
+}
+
+function hasSessionCookies() {
+  return Boolean(
+    extractedTokens.ubid ||
+      extractedTokens.sid ||
+      extractedTokens.sessionId ||
+      extractedTokens.at
+  );
+}
+
+function getAuthStatus() {
+  const missing = [];
+  if (!hasSessionCookies()) missing.push('Amazon session cookies');
+  if (!extractedTokens.deviceToken) missing.push('device token (open Cloud Reader once)');
+
+  return {
+    authenticated: hasSessionCookies(),
+    ready: hasSessionCookies() && Boolean(extractedTokens.deviceToken),
+    missing,
+    amazonDomain: extractedTokens.amazonDomain,
+    hasDeviceToken: Boolean(extractedTokens.deviceToken),
+  };
+}
+
+async function persistCredentials() {
+  await chrome.storage.local.set({
+    kindleCredentials: { ...extractedTokens, updatedAt: Date.now() },
+  });
+}
+
+async function loadStoredCredentials() {
+  const { kindleCredentials } = await chrome.storage.local.get('kindleCredentials');
+  if (kindleCredentials && typeof kindleCredentials === 'object') {
+    extractedTokens = { ...EMPTY_TOKENS, ...kindleCredentials };
+  }
 }
 
 async function fetchAmazonCookies() {
@@ -50,9 +82,8 @@ async function fetchAmazonCookies() {
     }
   }
 
-  await chrome.storage.local.set({
-    kindleCredentials: { ...extractedTokens, updatedAt: Date.now() },
-  });
+  await persistCredentials();
+  return getAuthStatus();
 }
 
 chrome.webRequest.onBeforeRequest.addListener(
@@ -68,7 +99,6 @@ chrome.webRequest.onBeforeRequest.addListener(
       }
       if (url.hostname.includes('amazon.')) {
         extractedTokens.amazonDomain = url.hostname.replace(/^www\./, '');
-        amazonOrigins = [`https://www.${extractedTokens.amazonDomain}`];
       }
     } catch {
       /* ignore malformed URLs */
@@ -85,7 +115,12 @@ chrome.webRequest.onBeforeRequest.addListener(
 
 async function getReadTab() {
   const tabs = await chrome.tabs.query({
-    url: ['*://read.amazon.com/*', '*://read.amazon.co.uk/*', '*://read.amazon.ca/*'],
+    url: [
+      '*://read.amazon.com/*',
+      '*://read.amazon.co.uk/*',
+      '*://read.amazon.ca/*',
+      '*://read.amazon.de/*',
+    ],
   });
   return tabs[0];
 }
@@ -95,7 +130,7 @@ async function messageContentScript(message) {
   if (!tab?.id) {
     return {
       error:
-        'Open Kindle Cloud Reader (read.amazon.com) in a tab while signed in, then try again.',
+        'Open Kindle Cloud Reader (read.amazon.com) in a tab while signed in, then refresh.',
     };
   }
   try {
@@ -131,6 +166,100 @@ function appendPoint(history, asin, title, timestamp, progress) {
   return { ...history, [key]: filtered };
 }
 
+async function syncLibraryToHistory(history) {
+  const contentRes = await messageContentScript({ action: 'fetchProgress' });
+  if (contentRes?.error) {
+    return { error: contentRes.error, history };
+  }
+
+  if (!contentRes?.library?.length) {
+    return { error: 'No books returned from Kindle. Sign in on read.amazon.com.', history };
+  }
+
+  let next = history;
+  const library = [];
+  for (const book of contentRes.library) {
+    if (!book.asin) continue;
+    library.push(book);
+    if (book.percentageRead != null && book.percentageRead > 0) {
+      next = appendPoint(
+        next,
+        book.asin,
+        book.title,
+        book.syncDate || new Date().toISOString(),
+        book.percentageRead
+      );
+    }
+  }
+
+  await saveHistory(next);
+  return { history: next, library };
+}
+
+async function syncBookDetail(history, asin) {
+  if (!asin) return { history };
+  const contentRes = await messageContentScript({ action: 'fetchProgress', asin });
+  if (contentRes?.error || !contentRes?.point) {
+    return { history, detailError: contentRes?.error };
+  }
+  const next = appendPoint(
+    history,
+    contentRes.asin,
+    contentRes.title,
+    contentRes.point.timestamp,
+    contentRes.point.progress
+  );
+  await saveHistory(next);
+  return {
+    history: next,
+    asin: contentRes.asin,
+    title: contentRes.title,
+    point: contentRes.point,
+  };
+}
+
+async function clearAuth({ clearHistory = false } = {}) {
+  extractedTokens = { ...EMPTY_TOKENS };
+  await chrome.storage.local.remove('kindleCredentials');
+  if (clearHistory) {
+    await chrome.storage.local.remove('kindleHistory');
+  }
+  return { cleared: true, auth: getAuthStatus() };
+}
+
+async function refreshAndSync({ asin } = {}) {
+  const auth = await fetchAmazonCookies();
+  if (!auth.authenticated) {
+    return {
+      error:
+        'No Amazon session found. Sign in at amazon.com, open read.amazon.com, then click Refresh.',
+      auth,
+    };
+  }
+
+  let history = await loadHistory();
+  const libResult = await syncLibraryToHistory(history);
+  if (libResult.error && !libResult.library?.length) {
+    return { error: libResult.error, auth, history: libResult.history };
+  }
+  history = libResult.history;
+
+  let detail;
+  const targetAsin = asin || libResult.library?.find((b) => b.percentageRead > 0)?.asin;
+  if (targetAsin) {
+    detail = await syncBookDetail(history, targetAsin);
+    history = detail.history;
+  }
+
+  return {
+    auth: getAuthStatus(),
+    history,
+    library: libResult.library,
+    asin: detail?.asin || targetAsin,
+    title: detail?.title,
+  };
+}
+
 async function handleMessage(request, sendResponse) {
   const action = request?.action;
 
@@ -139,61 +268,35 @@ async function handleMessage(request, sendResponse) {
     return;
   }
 
-  if (action === 'getKindleCredentials') {
+  if (action === 'getAuthStatus') {
     await fetchAmazonCookies();
-    sendResponse({ credentials: { ...extractedTokens } });
+    sendResponse({ auth: getAuthStatus() });
     return;
   }
 
-  if (action === 'syncReadingProgress') {
-    const contentRes = await messageContentScript({
-      action: 'fetchProgress',
-      asin: request.asin,
+  if (action === 'getKindleCredentials') {
+    await fetchAmazonCookies();
+    sendResponse({
+      auth: getAuthStatus(),
+      credentials: { ...extractedTokens },
     });
+    return;
+  }
 
-    if (contentRes?.error) {
-      sendResponse({ message: contentRes.error });
-      return;
-    }
+  if (action === 'getHistory') {
+    sendResponse({ history: await loadHistory() });
+    return;
+  }
 
-    let history = await loadHistory();
+  if (action === 'clearAuth') {
+    const result = await clearAuth({ clearHistory: Boolean(request.clearHistory) });
+    sendResponse(result);
+    return;
+  }
 
-    if (contentRes?.library?.length) {
-      for (const book of contentRes.library) {
-        if (book.asin && book.percentageRead != null) {
-          history = appendPoint(
-            history,
-            book.asin,
-            book.title,
-            book.syncDate || new Date().toISOString(),
-            book.percentageRead
-          );
-        }
-      }
-      await saveHistory(history);
-      sendResponse({ library: contentRes.library, history });
-      return;
-    }
-
-    if (contentRes?.point && contentRes?.asin) {
-      history = appendPoint(
-        history,
-        contentRes.asin,
-        contentRes.title,
-        contentRes.point.timestamp,
-        contentRes.point.progress
-      );
-      await saveHistory(history);
-      sendResponse({
-        asin: contentRes.asin,
-        title: contentRes.title,
-        points: [contentRes.point],
-        history,
-      });
-      return;
-    }
-
-    sendResponse({ message: 'No progress returned from Kindle tab.' });
+  if (action === 'refreshAndSync' || action === 'syncReadingProgress') {
+    const result = await refreshAndSync({ asin: request.asin });
+    sendResponse(result);
     return;
   }
 
@@ -203,7 +306,7 @@ async function handleMessage(request, sendResponse) {
 function listen(handler) {
   return (request, sender, sendResponse) => {
     handler(request, sendResponse).catch((err) => {
-      sendResponse({ error: err.message });
+      sendResponse({ error: err.message, auth: getAuthStatus() });
     });
     return true;
   };
@@ -213,7 +316,11 @@ chrome.runtime.onMessageExternal.addListener(listen(handleMessage));
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   const allowed = [
     'ping',
+    'getAuthStatus',
     'getKindleCredentials',
+    'getHistory',
+    'clearAuth',
+    'refreshAndSync',
     'syncReadingProgress',
   ];
   if (!allowed.includes(request?.action)) return false;
@@ -221,6 +328,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return true;
 });
 
-chrome.runtime.onInstalled.addListener(() => {
-  fetchAmazonCookies();
+chrome.runtime.onInstalled.addListener(async () => {
+  await loadStoredCredentials();
+  await fetchAmazonCookies();
 });
+
+loadStoredCredentials();

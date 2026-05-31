@@ -1,70 +1,44 @@
 # Kindle Reading Progress
 
-Client-side web app that plots Kindle reading progress **P(t)** as a **step chart** (flat plateaus between sessions, vertical jumps while reading). Optional Chrome extension automates session capture on [read.amazon.com](https://read.amazon.com).
+Client-side step chart of Kindle reading progress **P(t)**, synced automatically from your Amazon session via a Chrome extension. No JSON paste.
 
-## Quick start (chart only)
+## Quick start
 
-1. Serve this folder locally (extension messaging requires HTTP, not `file://`):
+1. Chrome → `chrome://extensions` → **Developer mode** → **Load unpacked** → `kindle/extension`
+2. Sign in at [read.amazon.com](https://read.amazon.com) (refresh once so device token is captured)
+3. Click the extension icon → **Open dashboard**
+4. Charts load automatically; click **Refresh** after reading sessions to append snapshots
 
-   ```bash
-   cd kindle
-   python3 -m http.server 8080
-   ```
+### If auth expires
 
-2. Open [http://localhost:8080](http://localhost:8080).
+- **Sign out** — clears stored Amazon session in the extension; reading history is kept
+- **Reset all data** — clears session and all saved progress snapshots
+- Then **Connect Amazon** → open Cloud Reader → **Refresh**
 
-3. Paste JSON and click **Generate progress graph**.
+## Localhost (optional)
 
-### Supported JSON shapes
+```bash
+cd kindle && python3 -m http.server 8080
+```
 
-- Array of points: `{ "timestamp": "...", "progress": 45 }` (progress 0–100, or 0–1)
-- Wrapper: `{ "progress_to_completion": [ ... ] }`
-- Kindle API snapshot: `{ "percentageRead": 13.1, "progress": { "syncDate": "..." } }`
-- Librera-style map: `{ "book.epub": { "t": 1565986186029, "p": 0.57 } }`
+Use only if you prefer `http://localhost:8080` over the extension dashboard. Expand **Advanced** and save your extension ID once.
 
-Use **days from start** on the X axis to match **t** in days from the first sync.
+## Security
 
-## Chrome extension (automated auth)
+- Cookies never leave your browser (extension `chrome.storage.local` only)
+- Do not share exported history files if they contain sensitive metadata
+- Unofficial API; use at your own risk
 
-Amazon has no public Kindle API. Community tools reuse **browser session cookies** and a **device token** from Cloud Reader. This extension reads them via `chrome.cookies` and network hooks (no passwords stored).
-
-### Install
-
-1. Chrome → `chrome://extensions` → **Developer mode** → **Load unpacked** → select `kindle/extension`.
-2. Copy the **extension ID** from the popup or extensions page.
-3. Sign in at [read.amazon.com](https://read.amazon.com) (refresh once so `getDeviceToken` runs).
-4. Open the dashboard at `http://localhost:8080`, paste the extension ID, click **Detect extension**.
-5. **Sync from Kindle** appends current progress into browser history and the chart.
-
-### Security
-
-- Cookies stay in **extension storage** and your **browser localStorage** (history only, not raw cookies in the chart app).
-- Never commit cookie values or share exported files that include credentials.
-- Unofficial API use may conflict with Amazon’s terms of service; use at your own risk.
-
-## Project layout
+## Layout
 
 ```
 kindle/
-  index.html          # Dashboard
-  css/app.css
-  js/
-    parse.js          # Normalize JSON → points
-    chart.js          # Chart.js stepped line
-    storage.js        # localStorage history
-    extension-bridge.js
-    app.js
+  index.html              # Optional localhost UI
   extension/
-    manifest.json
-    background.js     # Cookies + device token + messaging
-    content.js        # In-page fetch to Kindle library API
-    popup.html
+    dashboard.html        # Primary UI (recommended)
+    background.js         # Auth + sync
+    content.js            # Fetches from read.amazon.com tab
+    js/ css/              # Symlinks to ../js and ../css
 ```
 
-## Building reading history over time
-
-Each **Sync** or **Save to browser history** appends a snapshot. Re-sync after reading sessions to grow a step curve. Export via **Export history** for backup.
-
-## TLS / server-side note
-
-Node clients (e.g. [kindle-api](https://github.com/transitive-bullshit/kindle-api)) often need a local TLS proxy because of Amazon fingerprinting. This project avoids that by running fetches **inside** the signed-in Cloud Reader tab via the content script.
+History builds over time: each **Refresh** adds a point when progress changed. The step chart shows plateaus between sessions and jumps while reading.

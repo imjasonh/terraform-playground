@@ -1,75 +1,86 @@
-import { normalizeReadingData, toChartSeries } from './parse.js';
+import { historyEntriesToPoints, toChartSeries } from './parse.js';
 import { renderProgressChart, destroyChart, computeStats } from './chart.js';
 import {
   loadHistory,
   saveHistory,
   loadSelectedBook,
   saveSelectedBook,
-  loadCredentialsMeta,
   saveCredentialsMeta,
-  historyToJson,
-  appendSnapshot,
+  clearLocalAppData,
 } from './storage.js';
-import { extensionRequest, detectExtensionId, isExtensionAvailable } from './extension-bridge.js';
+import {
+  extensionRequest,
+  isExtensionAvailable,
+  isExtensionPage,
+} from './extension-bridge.js';
 
-const jsonInput = document.getElementById('jsonInput');
 const bookSelect = document.getElementById('bookSelect');
 const xAxisMode = document.getElementById('xAxisMode');
 const showTrend = document.getElementById('showTrend');
 const statsEl = document.getElementById('stats');
 const statusEl = document.getElementById('status');
+const authStatusEl = document.getElementById('authStatus');
+const setupPanel = document.getElementById('setupPanel');
+const mainPanel = document.getElementById('mainPanel');
 const extensionIdInput = document.getElementById('extensionId');
-const credentialsStatus = document.getElementById('credentialsStatus');
 
 let historyByBook = loadHistory();
+let syncing = false;
 
 function setStatus(message, type = 'info') {
   statusEl.textContent = message;
   statusEl.dataset.type = type;
 }
 
-function refreshBookSelect() {
-  const keys = Object.keys(historyByBook);
-  const selected = loadSelectedBook();
-  bookSelect.innerHTML = '<option value="">— All pasted data —</option>';
-  for (const asin of keys) {
-    const entries = historyByBook[asin];
-    const title = entries?.[0]?.title || asin;
+function setAuthStatus(text, type = 'info') {
+  authStatusEl.textContent = text;
+  authStatusEl.dataset.type = type;
+}
+
+function booksWithProgress() {
+  return Object.entries(historyByBook).filter(([, entries]) =>
+    entries?.some((e) => e.progress > 0)
+  );
+}
+
+function refreshBookSelect(preferredAsin) {
+  const pairs = booksWithProgress();
+  const selected = preferredAsin || loadSelectedBook();
+
+  bookSelect.innerHTML = '';
+  if (!pairs.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No books yet — connect Amazon and refresh';
+    bookSelect.appendChild(opt);
+    return;
+  }
+
+  for (const [asin, entries] of pairs) {
+    const title = entries.find((e) => e.title)?.title || asin;
     const opt = document.createElement('option');
     opt.value = asin;
-    opt.textContent = `${title} (${entries?.length ?? 0} points)`;
+    opt.textContent = `${title} (${entries.length} points)`;
     bookSelect.appendChild(opt);
   }
-  if (selected && keys.includes(selected)) {
-    bookSelect.value = selected;
-    jsonInput.value = historyToJson(historyByBook, selected);
-  }
+
+  const pick = pairs.find(([a]) => a === selected)?.[0] || pairs[0][0];
+  bookSelect.value = pick;
+  saveSelectedBook(pick);
 }
 
-function getParsedPoints() {
-  let raw;
-  try {
-    raw = JSON.parse(jsonInput.value.trim() || '[]');
-  } catch (e) {
-    setStatus(`Invalid JSON: ${e.message}`, 'error');
-    return null;
-  }
-
-  const { points, errors } = normalizeReadingData(raw);
-  if (errors.length && !points.length) {
-    setStatus(errors.join(' '), 'error');
-    return null;
-  }
-  if (errors.length) setStatus(errors.join(' '), 'warn');
-  else setStatus(`Loaded ${points.length} data point(s).`, 'success');
-  return points;
-}
-
-function renderFromInput() {
-  const points = getParsedPoints();
-  if (!points?.length) {
+function renderSelectedBook() {
+  const asin = bookSelect.value;
+  if (!asin) {
     destroyChart();
     statsEl.textContent = '';
+    return;
+  }
+
+  const points = historyEntriesToPoints(historyByBook, asin);
+  if (!points.length) {
+    destroyChart();
+    statsEl.textContent = 'No progress snapshots yet for this book. Click Refresh after reading.';
     return;
   }
 
@@ -77,139 +88,225 @@ function renderFromInput() {
   const series = toChartSeries(points, mode);
   const bookTitle = bookSelect.selectedOptions[0]?.textContent?.split(' (')[0];
 
-  renderProgressChart(document.getElementById('progressChart'), {
-    ...series,
-    bookTitle: bookSelect.value ? bookTitle : undefined,
-  }, {
-    xLabel: mode === 'daysFromStart' ? 'Days from first sync (t)' : 'Timeline',
-    showTrend: showTrend.checked,
-  });
+  renderProgressChart(
+    document.getElementById('progressChart'),
+    { ...series, bookTitle },
+    {
+      xLabel: mode === 'daysFromStart' ? 'Days from first sync (t)' : 'Timeline',
+      showTrend: showTrend.checked,
+    }
+  );
 
   const stats = computeStats(series.values);
   if (stats) {
-    statsEl.textContent = `Started at ${stats.startPercent.toFixed(1)}% → now ${stats.currentPercent.toFixed(1)}% (+${stats.totalGain.toFixed(1)}%). Active reading jumps: ~${stats.readingSessions}.`;
+    statsEl.textContent = `Started at ${stats.startPercent.toFixed(1)}% → now ${stats.currentPercent.toFixed(1)}% (+${stats.totalGain.toFixed(1)}%). Reading sessions: ~${stats.readingSessions}.`;
   }
 }
 
-function saveCurrentToHistory() {
-  const points = getParsedPoints();
-  if (!points?.length) return;
+function showPanels({ connected }) {
+  if (setupPanel) setupPanel.hidden = connected;
+  if (mainPanel) mainPanel.hidden = !connected;
+}
 
-  const asin = bookSelect.value || prompt('Book ASIN or short id for this series:', '_default');
-  if (!asin) return;
-
-  const title = prompt('Book title (optional):', '') || undefined;
-  let next = { ...historyByBook };
-  for (const p of points) {
-    next = appendSnapshot(next, asin, title, {
-      timestamp: p.timestamp.toISOString(),
-      progress: p.progress,
-    });
+async function applyAuthStatus(auth) {
+  if (!auth?.authenticated) {
+    setAuthStatus('Not signed in — open Kindle Cloud Reader while logged into Amazon.', 'warn');
+    showPanels({ connected: false });
+    return false;
   }
-  historyByBook = next;
-  saveHistory(historyByBook);
-  saveSelectedBook(asin);
-  refreshBookSelect();
-  bookSelect.value = asin;
-  setStatus(`Saved ${points.length} point(s) under “${asin}”.`, 'success');
+
+  if (!auth.ready) {
+    setAuthStatus(
+      `Session found; still need: ${auth.missing?.join(', ') || 'device token'}. Open read.amazon.com and reload that tab.`,
+      'warn'
+    );
+    showPanels({ connected: true });
+    return true;
+  }
+
+  setAuthStatus(`Connected (${auth.amazonDomain || 'amazon.com'}).`, 'success');
+  saveCredentialsMeta({
+    hasCookies: true,
+    hasDeviceToken: auth.hasDeviceToken,
+    amazonDomain: auth.amazonDomain,
+  });
+  showPanels({ connected: true });
+  return true;
 }
 
-async function loadBookFromHistory() {
-  const asin = bookSelect.value;
-  saveSelectedBook(asin);
-  if (!asin) return;
-  jsonInput.value = historyToJson(historyByBook, asin);
-  renderFromInput();
-}
+async function refreshAll({ asin } = {}) {
+  if (syncing) return;
+  syncing = true;
+  setStatus('Syncing library from Kindle…');
+  const refreshBtn = document.getElementById('refreshBtn');
+  if (refreshBtn) refreshBtn.disabled = true;
 
-async function tryExtensionCredentials() {
   try {
-    const res = await extensionRequest('getKindleCredentials');
-    const filled = res?.credentials;
-    if (!filled?.ubid && !filled?.sid) {
-      credentialsStatus.textContent =
-        'Extension connected but cookies are empty. Open read.amazon.com while signed in.';
+    const res = await extensionRequest('refreshAndSync', { asin: asin || bookSelect.value || undefined });
+
+    if (res?.error) {
+      setStatus(res.error, 'error');
+      if (res.auth) await applyAuthStatus(res.auth);
       return;
     }
-    saveCredentialsMeta({
-      hasCookies: true,
-      hasDeviceToken: Boolean(filled.deviceToken),
-      amazonDomain: filled.amazonDomain,
-    });
-    credentialsStatus.textContent = `Credentials captured (${filled.amazonDomain}). Device token: ${filled.deviceToken ? 'yes' : 'pending — refresh Kindle Cloud Reader'}.`;
-    setStatus('Credentials loaded from extension (stored only in extension storage).', 'success');
-  } catch (e) {
-    credentialsStatus.textContent = e.message;
-    setStatus(e.message, 'error');
-  }
-}
 
-async function syncFromExtension() {
-  const asin = bookSelect.value;
-  try {
-    const res = await extensionRequest('syncReadingProgress', { asin: asin || undefined });
+    if (res?.auth) await applyAuthStatus(res.auth);
+
     if (res?.history) {
       historyByBook = { ...historyByBook, ...res.history };
       saveHistory(historyByBook);
-      refreshBookSelect();
     }
-    if (res?.asin) {
-      saveSelectedBook(res.asin);
-      bookSelect.value = res.asin;
-      jsonInput.value = historyToJson(historyByBook, res.asin);
-      renderFromInput();
-      const last = res.points?.[res.points.length - 1];
-      setStatus(
-        `Synced “${res.title || res.asin}” at ${last?.progress?.toFixed?.(1) ?? '?'}%.`,
-        'success'
-      );
-      return;
+
+    const target = res?.asin || bookSelect.value;
+    refreshBookSelect(target);
+    if (target) {
+      bookSelect.value = target;
+      saveSelectedBook(target);
     }
-    if (res?.library?.length) {
-      setStatus(`Library sync: ${res.library.length} book(s) updated.`, 'success');
-      if (!asin && Object.keys(historyByBook).length) {
-        const first = Object.keys(historyByBook)[0];
-        bookSelect.value = first;
-        jsonInput.value = historyToJson(historyByBook, first);
-        renderFromInput();
-      }
-      return;
-    }
-    setStatus(res?.message || 'Sync completed with no new data.', 'info');
+    renderSelectedBook();
+    setStatus(
+      res?.library?.length
+        ? `Updated ${res.library.length} book(s) from your library.`
+        : 'Sync complete.',
+      'success'
+    );
   } catch (e) {
     setStatus(e.message, 'error');
+    setAuthStatus(e.message, 'error');
+    showPanels({ connected: false });
+  } finally {
+    syncing = false;
+    if (refreshBtn) refreshBtn.disabled = false;
   }
 }
 
-async function detectExtension() {
-  const manualId = extensionIdInput.value.trim();
-  if (!manualId) {
-    setStatus('Paste the extension ID from the Kindle Chart Sync popup, then click Detect again.', 'warn');
-    return;
-  }
-  localStorage.setItem('kindle-extension-id', manualId);
-  if (!isExtensionAvailable()) {
-    setStatus('Open this app at http://localhost:8080 (not file://) so Chrome can connect to the extension.', 'warn');
-    return;
-  }
-  const id = await detectExtensionId();
-  if (id) {
-    setStatus(`Extension connected: ${id}`, 'success');
-    await tryExtensionCredentials();
-  } else {
-    setStatus('Could not reach extension. Check the ID and that Kindle Chart Sync is enabled.', 'error');
+async function checkAuth() {
+  try {
+    const res = await extensionRequest('getAuthStatus');
+    return res?.auth;
+  } catch {
+    return null;
   }
 }
 
-document.getElementById('renderBtn').addEventListener('click', renderFromInput);
-document.getElementById('saveHistoryBtn').addEventListener('click', saveCurrentToHistory);
-document.getElementById('clearInputBtn').addEventListener('click', () => {
-  jsonInput.value = '';
+async function signOut({ clearHistory = false } = {}) {
+  try {
+    await extensionRequest('clearAuth', { clearHistory });
+  } catch {
+    /* extension may be unreachable */
+  }
+  clearLocalAppData({ history: clearHistory });
+  historyByBook = clearHistory ? {} : loadHistory();
+  if (!clearHistory) await loadHistoryFromExtension();
+  saveCredentialsMeta(null);
   destroyChart();
   statsEl.textContent = '';
-  setStatus('');
+  setStatus(clearHistory ? 'Signed out and cleared all local data.' : 'Signed out. Re-open Cloud Reader to connect again.', 'info');
+  setAuthStatus('Signed out.', 'info');
+  showPanels({ connected: false });
+  refreshBookSelect();
+}
+
+function openCloudReader() {
+  window.open('https://read.amazon.com/kindle-library', '_blank', 'noopener');
+}
+
+async function saveExtensionId() {
+  const id = extensionIdInput?.value?.trim();
+  if (!id) return false;
+  localStorage.setItem('kindle-extension-id', id);
+  return true;
+}
+
+async function loadHistoryFromExtension() {
+  try {
+    const res = await extensionRequest('getHistory');
+    if (res?.history && typeof res.history === 'object') {
+      historyByBook = res.history;
+      saveHistory(historyByBook);
+    }
+  } catch {
+    /* not connected yet */
+  }
+}
+
+async function bootstrap() {
+  if (isExtensionPage()) {
+    showPanels({ connected: true });
+    await loadHistoryFromExtension();
+    const auth = await checkAuth();
+    if (auth) await applyAuthStatus(auth);
+    refreshBookSelect();
+    renderSelectedBook();
+    if (auth?.authenticated) await refreshAll();
+    return;
+  }
+
+  if (!isExtensionAvailable()) {
+    setAuthStatus('Install the Chrome extension and open this page via the extension popup.', 'warn');
+    showPanels({ connected: false });
+    return;
+  }
+
+  const storedId = localStorage.getItem('kindle-extension-id');
+  if (extensionIdInput && storedId) extensionIdInput.value = storedId;
+
+  if (!storedId) {
+    setAuthStatus('Open the dashboard from the extension popup (recommended), or enter your extension ID below.', 'warn');
+    showPanels({ connected: false });
+    return;
+  }
+
+  await loadHistoryFromExtension();
+  refreshBookSelect();
+  renderSelectedBook();
+
+  const auth = await checkAuth();
+  if (auth?.ready) {
+    await applyAuthStatus(auth);
+    await refreshAll();
+  } else if (auth?.authenticated) {
+    await applyAuthStatus(auth);
+    setStatus('Open read.amazon.com, then click Refresh.', 'warn');
+  } else {
+    showPanels({ connected: false });
+    setAuthStatus('Session expired or missing. Open Cloud Reader and sign in.', 'warn');
+  }
+}
+
+document.getElementById('refreshBtn')?.addEventListener('click', () => refreshAll());
+document.getElementById('openKindleBtn')?.addEventListener('click', openCloudReader);
+document.getElementById('signOutBtn')?.addEventListener('click', () => signOut({ clearHistory: false }));
+document.getElementById('resetAllBtn')?.addEventListener('click', async () => {
+  if (!confirm('Clear Amazon session and delete all reading history on this device?')) return;
+  await signOut({ clearHistory: true });
 });
-document.getElementById('exportHistoryBtn').addEventListener('click', () => {
+document.getElementById('connectBtn')?.addEventListener('click', async () => {
+  openCloudReader();
+  if (!isExtensionPage() && extensionIdInput) {
+    await saveExtensionId();
+  }
+  setTimeout(() => refreshAll(), 3000);
+});
+document.getElementById('saveExtensionIdBtn')?.addEventListener('click', async () => {
+  if (!(await saveExtensionId())) {
+    setStatus('Enter your extension ID first.', 'warn');
+    return;
+  }
+  await bootstrap();
+});
+
+bookSelect.addEventListener('change', async () => {
+  const asin = bookSelect.value;
+  saveSelectedBook(asin);
+  renderSelectedBook();
+  if (asin) await refreshAll({ asin });
+});
+
+xAxisMode.addEventListener('change', renderSelectedBook);
+showTrend.addEventListener('change', renderSelectedBook);
+
+document.getElementById('exportHistoryBtn')?.addEventListener('click', () => {
   const blob = new Blob([JSON.stringify(historyByBook, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -217,29 +314,6 @@ document.getElementById('exportHistoryBtn').addEventListener('click', () => {
   a.click();
   URL.revokeObjectURL(a.href);
 });
-bookSelect.addEventListener('change', loadBookFromHistory);
-xAxisMode.addEventListener('change', renderFromInput);
-showTrend.addEventListener('change', renderFromInput);
-document.getElementById('detectExtensionBtn').addEventListener('click', detectExtension);
-document.getElementById('fetchCredentialsBtn').addEventListener('click', tryExtensionCredentials);
-document.getElementById('syncExtensionBtn').addEventListener('click', syncFromExtension);
-
-const meta = loadCredentialsMeta();
-if (meta) {
-  credentialsStatus.textContent = `Last credential check: ${meta.updatedAt || 'unknown'}`;
-}
 
 refreshBookSelect();
-
-if (!jsonInput.value.trim()) {
-  jsonInput.value = `[
-  {"timestamp": "2026-05-01T08:00:00Z", "progress": 0},
-  {"timestamp": "2026-05-05T20:30:00Z", "progress": 15},
-  {"timestamp": "2026-05-12T22:15:00Z", "progress": 45},
-  {"timestamp": "2026-05-20T07:45:00Z", "progress": 80},
-  {"timestamp": "2026-05-25T23:00:00Z", "progress": 100}
-]`;
-}
-
-const storedExtId = localStorage.getItem('kindle-extension-id');
-if (storedExtId) extensionIdInput.value = storedExtId;
+bootstrap();

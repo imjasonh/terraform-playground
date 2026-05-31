@@ -5,7 +5,7 @@
   <style>
     body {
       font-family: system-ui, sans-serif;
-      width: 280px;
+      width: 300px;
       margin: 12px;
       font-size: 13px;
       color: #18181b;
@@ -24,18 +24,18 @@
       font-size: 13px;
     }
     button.secondary { background: #e4e4e7; color: #18181b; }
-    code { font-size: 11px; word-break: break-all; }
+    button.danger { background: #fef2f2; color: #b91c1c; }
     #status { min-height: 2em; }
   </style>
 </head>
 <body>
   <h1>Kindle Chart Sync</h1>
   <p id="status">Checking session…</p>
-  <p>Extension ID (paste into dashboard):</p>
-  <code id="extId"></code>
+  <button type="button" id="openDashboard">Open dashboard</button>
   <button type="button" id="openKindle">Open Cloud Reader</button>
-  <button type="button" id="refreshCookies" class="secondary">Refresh cookies</button>
-  <button type="button" id="openDashboard">Open local dashboard</button>
+  <button type="button" id="refreshSync" class="secondary">Refresh library</button>
+  <button type="button" id="signOut" class="secondary">Sign out</button>
+  <button type="button" id="resetAll" class="danger">Reset all data</button>
   <script src="popup.js"></script>
 </body>
 </html>

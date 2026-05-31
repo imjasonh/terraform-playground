@@ -10,14 +10,14 @@
 <body>
   <h1>Kindle Reading Progress</h1>
   <p class="lead">
-    Reading progress is loaded automatically from your Amazon session via the Chrome extension. No manual data entry.
+    Syncs automatically from your Amazon session. Open Cloud Reader if prompted, then Refresh.
   </p>
 
   <section aria-labelledby="auth-heading">
     <h2 id="auth-heading">Amazon session</h2>
     <p id="authStatus" class="auth-status">Checking connection…</p>
     <p class="warning">
-      Session cookies stay in your browser only (extension storage). Use Sign out if auth expires or you switch accounts.
+      Session cookies stay in your browser only. Use Sign out if auth expires or you switch accounts.
     </p>
     <div class="row">
       <button type="button" id="connectBtn">Connect Amazon</button>
@@ -29,21 +29,7 @@
     <p id="status"></p>
   </section>
 
-  <section id="setupPanel" aria-labelledby="setup-heading">
-    <h2 id="setup-heading">Setup</h2>
-    <p class="hint">
-      Best path: install <code>kindle/extension</code>, sign in on read.amazon.com, then open <strong>Dashboard</strong> from the extension popup (no extension ID needed).
-    </p>
-    <details>
-      <summary>Advanced: localhost + extension ID</summary>
-      <p class="hint">Only if you serve this page at <code>http://localhost:8080</code> instead of the extension dashboard.</p>
-      <label for="extensionId">Extension ID</label>
-      <input type="text" id="extensionId" placeholder="From chrome://extensions" />
-      <button type="button" id="saveExtensionIdBtn" class="secondary">Save &amp; connect</button>
-    </details>
-  </section>
-
-  <section id="mainPanel" hidden aria-labelledby="books-heading">
+  <section id="mainPanel" aria-labelledby="books-heading">
     <h2 id="books-heading">Your books</h2>
     <label for="bookSelect">Book</label>
     <select id="bookSelect"></select>

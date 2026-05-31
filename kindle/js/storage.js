@@ -49,18 +49,12 @@ export function saveCredentialsMeta(meta) {
   );
 }
 
-export function historyToJson(historyByBook, asin) {
-  if (asin && historyByBook[asin]) {
-    return JSON.stringify(
-      historyByBook[asin].map((p) => ({
-        timestamp: p.timestamp,
-        progress: p.progress,
-      })),
-      null,
-      2
-    );
+export function clearLocalAppData({ history = false } = {}) {
+  localStorage.removeItem(CREDENTIALS_KEY);
+  if (history) {
+    localStorage.removeItem(HISTORY_KEY);
+    localStorage.removeItem(SELECTED_BOOK_KEY);
   }
-  return JSON.stringify(historyByBook, null, 2);
 }
 
 export function appendSnapshot(historyByBook, asin, title, point) {

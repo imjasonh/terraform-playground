@@ -152,6 +152,43 @@ button.secondary:hover {
   margin: 0 0 0.75rem;
 }
 
+.auth-status {
+  font-size: 0.95rem;
+  font-weight: 500;
+  margin: 0 0 0.75rem;
+}
+
+.auth-status[data-type='success'] {
+  color: var(--success);
+}
+
+.auth-status[data-type='warn'] {
+  color: var(--warn);
+}
+
+.auth-status[data-type='error'] {
+  color: var(--danger);
+}
+
+button.danger {
+  background: #fef2f2;
+  color: var(--danger);
+}
+
+button.danger:hover {
+  background: #fee2e2;
+}
+
+details {
+  margin-top: 12px;
+  font-size: 0.9rem;
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--primary);
+}
+
 .grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;

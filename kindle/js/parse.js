@@ -187,6 +187,22 @@ export function toChartSeries(points, mode = 'calendar') {
   return { labels, values, daysFromStart };
 }
 
+/**
+ * @param {Record<string, { timestamp: string, progress: number, title?: string }[]>} historyByBook
+ * @param {string} asin
+ */
+export function historyEntriesToPoints(historyByBook, asin) {
+  const entries = historyByBook[asin];
+  if (!entries?.length) return [];
+  const { points } = normalizeReadingData(
+    entries.map((e) => ({
+      timestamp: e.timestamp,
+      progress: e.progress,
+    }))
+  );
+  return points;
+}
+
 export function mergeHistory(existing, incoming) {
   const combined = [...(existing || []), ...(incoming || [])];
   const { points } = normalizeReadingData(
