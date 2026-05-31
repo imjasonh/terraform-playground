@@ -1,44 +1,42 @@
 # Kindle Reading Progress
 
-Client-side step chart of Kindle reading progress **P(t)**, synced automatically from your Amazon session via a Chrome extension. No JSON paste.
+Chrome extension that charts your Kindle reading progress **P(t)** over time, synced automatically from your Amazon session. No JSON paste, no separate web server.
 
 ## Quick start
 
 1. Chrome → `chrome://extensions` → **Developer mode** → **Load unpacked** → `kindle/extension`
-2. Sign in at [read.amazon.com](https://read.amazon.com) (refresh once so device token is captured)
+2. Sign in at [read.amazon.com](https://read.amazon.com) and reload that tab once so the device token is captured
 3. Click the extension icon → **Open dashboard**
-4. Charts load automatically; click **Refresh** after reading sessions to append snapshots
+4. Click **Refresh**. Snapshots accumulate over time; each refresh appends a point when progress changed
 
 ### If auth expires
 
-- **Sign out** — clears stored Amazon session in the extension; reading history is kept
-- **Reset all data** — clears session and all saved progress snapshots
+- **Sign out** — clears the stored Amazon session; reading history is kept
+- **Reset all data** — clears session and all saved snapshots
 - Then **Connect Amazon** → open Cloud Reader → **Refresh**
-
-## Localhost (optional)
-
-```bash
-cd kindle && python3 -m http.server 8080
-```
-
-Use only if you prefer `http://localhost:8080` over the extension dashboard. Expand **Advanced** and save your extension ID once.
 
 ## Security
 
-- Cookies never leave your browser (extension `chrome.storage.local` only)
-- Do not share exported history files if they contain sensitive metadata
-- Unofficial API; use at your own risk
+- Cookies never leave your browser (`chrome.storage.local` only)
+- Don't share exported history files if they contain sensitive metadata
+- Unofficial Kindle API; use at your own risk
 
 ## Layout
 
 ```
 kindle/
-  index.html              # Optional localhost UI
+  README.md
   extension/
-    dashboard.html        # Primary UI (recommended)
-    background.js         # Auth + sync
-    content.js            # Fetches from read.amazon.com tab
-    js/ css/              # Symlinks to ../js and ../css
+    manifest.json     # MV3 config
+    dashboard.html    # Main UI
+    popup.html/.js    # Toolbar popup
+    background.js     # Auth capture, sync orchestration
+    content.js        # Runs on read.amazon.com; fetches library/progress
+    vendor/           # Bundled Chart.js (MV3 forbids remote scripts)
+    js/               # Dashboard modules (app, chart, parse, storage, bridge)
+    css/              # Dashboard styles
 ```
 
-History builds over time: each **Refresh** adds a point when progress changed. The step chart shows plateaus between sessions and jumps while reading.
+## Known limitations
+
+`startReading` only returns Whispersync data for books the **web reader** has touched. Books read only on physical Kindle devices come back with `position: -1` and are filtered out of the chart. Finding a bulk-progress endpoint that exposes all devices is a TODO — see the comments in `content.js`.

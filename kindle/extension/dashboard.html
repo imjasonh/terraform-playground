@@ -1,61 +1,75 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Kindle Reading Progress</title>
-  <link rel="stylesheet" href="css/app.css" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-</head>
-<body>
-  <h1>Kindle Reading Progress</h1>
-  <p class="lead">
-    Syncs automatically from your Amazon session. Open Cloud Reader if prompted, then Refresh.
-  </p>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Kindle Reading Progress</title>
+        <link rel="stylesheet" href="css/app.css" />
+        <script src="vendor/chart.umd.min.js"></script>
+    </head>
+    <body>
+        <h1>Kindle Reading Progress</h1>
+        <p class="lead">
+            Syncs automatically from your Amazon session. Open Cloud Reader if
+            prompted, then Refresh.
+        </p>
 
-  <section aria-labelledby="auth-heading">
-    <h2 id="auth-heading">Amazon session</h2>
-    <p id="authStatus" class="auth-status">Checking connection…</p>
-    <p class="warning">
-      Session cookies stay in your browser only. Use Sign out if auth expires or you switch accounts.
-    </p>
-    <div class="row">
-      <button type="button" id="connectBtn">Connect Amazon</button>
-      <button type="button" id="openKindleBtn" class="secondary">Open Cloud Reader</button>
-      <button type="button" id="refreshBtn">Refresh</button>
-      <button type="button" id="signOutBtn" class="secondary">Sign out</button>
-      <button type="button" id="resetAllBtn" class="danger">Reset all data</button>
-    </div>
-    <p id="status"></p>
-  </section>
+        <section aria-labelledby="auth-heading">
+            <h2 id="auth-heading">Amazon session</h2>
+            <p id="authStatus" class="auth-status">Checking connection…</p>
+            <p class="warning">
+                Session cookies stay in your browser only. Use Sign out if auth
+                expires or you switch accounts.
+            </p>
+            <div class="row">
+                <button type="button" id="connectBtn">Connect Amazon</button>
+                <button type="button" id="openKindleBtn" class="secondary">
+                    Open Cloud Reader
+                </button>
+                <button type="button" id="refreshBtn">Refresh</button>
+                <button type="button" id="signOutBtn" class="secondary">
+                    Sign out
+                </button>
+                <button type="button" id="resetAllBtn" class="danger">
+                    Reset all data
+                </button>
+            </div>
+            <p id="status"></p>
+        </section>
 
-  <section id="mainPanel" aria-labelledby="books-heading">
-    <h2 id="books-heading">Your books</h2>
-    <label for="bookSelect">Book</label>
-    <select id="bookSelect"></select>
-    <div class="row">
-      <label>
-        <select id="xAxisMode">
-          <option value="calendar">X: calendar time</option>
-          <option value="days">X: days from start (t)</option>
-        </select>
-      </label>
-      <label>
-        <input type="checkbox" id="showTrend" />
-        Show trend overlay
-      </label>
-      <button type="button" id="exportHistoryBtn" class="secondary">Export history</button>
-    </div>
-    <p id="stats"></p>
-  </section>
+        <section id="mainPanel" aria-labelledby="books-heading">
+            <h2 id="books-heading">Your books</h2>
+            <label for="bookSelect">Book</label>
+            <select id="bookSelect"></select>
+            <div class="row">
+                <label>
+                    <select id="xAxisMode">
+                        <option value="calendar">X: calendar time</option>
+                        <option value="days">X: days from start (t)</option>
+                    </select>
+                </label>
+                <label>
+                    <input type="checkbox" id="showTrend" />
+                    Show trend overlay
+                </label>
+                <button type="button" id="exportHistoryBtn" class="secondary">
+                    Export history
+                </button>
+            </div>
+            <p id="stats"></p>
+        </section>
 
-  <section aria-labelledby="chart-heading">
-    <h2 id="chart-heading">Progress chart</h2>
-    <div class="chart-wrap">
-      <canvas id="progressChart" role="img" aria-label="Reading progress step chart"></canvas>
-    </div>
-  </section>
+        <section aria-labelledby="chart-heading">
+            <h2 id="chart-heading">Progress chart</h2>
+            <div class="chart-wrap">
+                <canvas
+                    id="progressChart"
+                    role="img"
+                    aria-label="Reading progress step chart"
+                ></canvas>
+            </div>
+        </section>
 
-  <script type="module" src="js/app.js"></script>
-</body>
+        <script type="module" src="js/app.js"></script>
+    </body>
 </html>

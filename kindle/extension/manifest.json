@@ -3,7 +3,7 @@
   "name": "Kindle Chart Sync",
   "version": "1.0.0",
   "description": "Captures Amazon session tokens and syncs Kindle reading progress to your local chart dashboard.",
-  "permissions": ["cookies", "storage", "tabs", "webRequest"],
+  "permissions": ["cookies", "storage", "tabs", "webRequest", "scripting"],
   "host_permissions": [
     "*://*.amazon.com/*",
     "*://*.amazon.co.uk/*",
@@ -33,11 +33,5 @@
       "js": ["content.js"],
       "run_at": "document_idle"
     }
-  ],
-  "externally_connectable": {
-    "matches": [
-      "http://127.0.0.1:*/*",
-      "http://localhost:*/*"
-    ]
-  }
+  ]
 }
