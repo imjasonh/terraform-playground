@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kindle Reading Progress</title>
+  <link rel="stylesheet" href="css/app.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <h1>Kindle Reading Progress</h1>
+  <p class="lead">
+    Plot reading progress P(t) as a step chart. Data stays in your browser unless you use the optional Chrome extension to sync from read.amazon.com.
+  </p>
+
+  <section aria-labelledby="ext-heading">
+    <h2 id="ext-heading">Chrome extension (optional)</h2>
+    <p class="warning">
+      Session cookies grant access to your Amazon account. They are stored in extension local storage only, never sent to a third-party server. Do not share exports that include cookie values.
+    </p>
+    <p class="hint">
+      Install <code>kindle/extension</code>, visit read.amazon.com while signed in, then open this page at <code>http://localhost:8080</code> (required for extension messaging).
+    </p>
+    <div class="grid-2">
+      <div>
+        <label for="extensionId">Extension ID</label>
+        <input type="text" id="extensionId" placeholder="From chrome://extensions" />
+      </div>
+      <div class="row" style="margin-top: 1.5rem">
+        <button type="button" id="detectExtensionBtn" class="secondary">Detect extension</button>
+        <button type="button" id="fetchCredentialsBtn" class="secondary">Refresh credentials</button>
+        <button type="button" id="syncExtensionBtn">Sync from Kindle</button>
+      </div>
+    </div>
+    <p id="credentialsStatus" class="hint"></p>
+  </section>
+
+  <section aria-labelledby="data-heading">
+    <h2 id="data-heading">Reading data</h2>
+    <label for="bookSelect">Saved books</label>
+    <select id="bookSelect"></select>
+    <p class="hint">
+      Paste JSON: an array of <code>{ "timestamp", "progress" }</code>, a <code>progress_to_completion</code> payload, or Kindle API snapshots with <code>percentageRead</code> / <code>syncDate</code>.
+    </p>
+    <textarea id="jsonInput" spellcheck="false" aria-label="Reading progress JSON"></textarea>
+    <div class="row">
+      <button type="button" id="renderBtn">Generate progress graph</button>
+      <button type="button" id="saveHistoryBtn" class="secondary">Save to browser history</button>
+      <button type="button" id="exportHistoryBtn" class="secondary">Export history</button>
+      <button type="button" id="clearInputBtn" class="secondary">Clear</button>
+    </div>
+    <div class="row">
+      <label>
+        <select id="xAxisMode">
+          <option value="calendar">X: calendar time</option>
+          <option value="days">X: days from start (t)</option>
+        </select>
+      </label>
+      <label>
+        <input type="checkbox" id="showTrend" />
+        Show trend overlay
+      </label>
+    </div>
+    <p id="status"></p>
+    <p id="stats"></p>
+  </section>
+
+  <section aria-labelledby="chart-heading">
+    <h2 id="chart-heading">Progress chart</h2>
+    <div class="chart-wrap">
+      <canvas id="progressChart" role="img" aria-label="Reading progress step chart"></canvas>
+    </div>
+  </section>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

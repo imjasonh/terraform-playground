@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Kindle Chart Sync",
+  "version": "1.0.0",
+  "description": "Captures Amazon session tokens and syncs Kindle reading progress to your local chart dashboard.",
+  "permissions": ["cookies", "storage", "tabs", "webRequest"],
+  "host_permissions": [
+    "*://*.amazon.com/*",
+    "*://*.amazon.co.uk/*",
+    "*://*.amazon.ca/*",
+    "*://*.amazon.de/*",
+    "*://*.amazon.fr/*",
+    "*://*.amazon.co.jp/*",
+    "*://read.amazon.com/*",
+    "*://read.amazon.co.uk/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Kindle Chart Sync"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://read.amazon.com/*",
+        "*://read.amazon.co.uk/*",
+        "*://read.amazon.ca/*",
+        "*://read.amazon.de/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "externally_connectable": {
+    "matches": [
+      "http://127.0.0.1:*/*",
+      "http://localhost:*/*"
+    ]
+  }
+}

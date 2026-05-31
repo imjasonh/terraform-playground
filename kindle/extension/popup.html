@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      width: 280px;
+      margin: 12px;
+      font-size: 13px;
+      color: #18181b;
+    }
+    h1 { font-size: 15px; margin: 0 0 8px; }
+    p { margin: 0 0 10px; color: #52525b; line-height: 1.4; }
+    button {
+      width: 100%;
+      margin-bottom: 8px;
+      padding: 8px;
+      border: none;
+      border-radius: 6px;
+      background: #2563eb;
+      color: white;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button.secondary { background: #e4e4e7; color: #18181b; }
+    code { font-size: 11px; word-break: break-all; }
+    #status { min-height: 2em; }
+  </style>
+</head>
+<body>
+  <h1>Kindle Chart Sync</h1>
+  <p id="status">Checking session…</p>
+  <p>Extension ID (paste into dashboard):</p>
+  <code id="extId"></code>
+  <button type="button" id="openKindle">Open Cloud Reader</button>
+  <button type="button" id="refreshCookies" class="secondary">Refresh cookies</button>
+  <button type="button" id="openDashboard">Open local dashboard</button>
+  <script src="popup.js"></script>
+</body>
+</html>
