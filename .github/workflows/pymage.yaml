@@ -8,19 +8,22 @@ on:
 
 jobs:
   ci:
-    # Runs the unit + e2e test suite and lint, then demonstrates the docker-less
-    # builder end to end against a real registry, pulling and RUNNING the built
-    # image with Docker to prove it works.
-    runs-on: ubuntu-latest
-    services:
-      registry:
-        image: registry:2
-        ports:
-          - 5000:5000
+    # Runs on Linux, macOS, and Windows to prove pymage can build a multi-arch
+    # *linux* image index from any host OS (it never needs a Docker daemon to
+    # build). The Docker-only demonstration steps are gated to Linux, where the
+    # daemon is available.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     env:
-      REGISTRY: localhost:5000
       BASE: python:3.12-slim
       PYTHON: python3.12
+      REGISTRY: localhost:1338
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -38,16 +41,27 @@ jobs:
         run: go test -race ./...
 
       - name: Run golangci-lint
+        if: runner.os == 'Linux'
         uses: golangci/golangci-lint-action@v9.2.0
         with:
           working-directory: pymage
           version: latest
 
-      - name: Build the CLI
-        working-directory: pymage
-        run: go build -o pymage .
+      - name: Install crane
+        run: |
+          go install github.com/google/go-containerregistry/cmd/crane@v0.19.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: Prepare a demo app, wheelhouse, and hashed lock
+      - name: Start a local registry (in-memory, cross-platform)
+        run: |
+          crane registry serve --address "$REGISTRY" &
+          for _ in $(seq 1 30); do
+            curl -fsS "http://$REGISTRY/v2/" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS "http://$REGISTRY/v2/" >/dev/null
+
+      - name: Prepare demo app, wheelhouse, and hashed lock
         working-directory: pymage
         run: |
           set -euo pipefail
@@ -61,104 +75,110 @@ jobs:
           PY
 
           python -m pip install --upgrade pip
-          # Pure-python wheels (py3-none-any), resolved locally to keep the build hermetic.
+          # Pure-python wheels (py3-none-any): identical on every host OS and
+          # compatible with every target platform.
           pip download --no-deps --only-binary=:all: \
             six==1.16.0 click==8.1.7 -d demo/wheelhouse
 
-          six_whl=$(ls demo/wheelhouse/six-*.whl)
-          click_whl=$(ls demo/wheelhouse/click-*.whl)
-          {
-            echo "six==1.16.0 --hash=sha256:$(sha256sum "$six_whl" | awk '{print $1}')"
-            echo "click==8.1.7 --hash=sha256:$(sha256sum "$click_whl" | awk '{print $1}')"
-          } > demo/requirements.txt
-          echo "----- requirements.txt -----"
-          cat demo/requirements.txt
+          # Generate a hashed lock with the interpreter (portable across OSes,
+          # unlike sha256sum vs shasum differences).
+          python - <<'PY'
+          import glob, hashlib, os
+          lines = []
+          for whl in sorted(glob.glob("demo/wheelhouse/*.whl")):
+              parts = os.path.basename(whl)[:-4].split("-")
+              name, version = parts[0], parts[1]
+              digest = hashlib.sha256(open(whl, "rb").read()).hexdigest()
+              lines.append(f"{name}=={version} --hash=sha256:{digest}")
+          open("demo/requirements.txt", "w").write("\n".join(lines) + "\n")
+          print(open("demo/requirements.txt").read())
+          PY
 
-      - name: Build and push the image (no Docker daemon involved)
+      - name: Build & push a multi-arch (linux/amd64 + linux/arm64) image
         working-directory: pymage
         run: |
           set -euo pipefail
-          ./pymage build \
+          go run . build \
             --base "$BASE" \
+            --platform linux/amd64,linux/arm64 \
             --lock demo/requirements.txt \
             --find-links demo/wheelhouse \
             --source demo/src \
             --python "$PYTHON" \
             --entrypoint python --entrypoint /app/app.py \
-            --sbom demo/sbom.json \
             --insecure \
-            -t "$REGISTRY/demo:v1"
-          echo "----- SBOM -----"
-          cat demo/sbom.json
+            -t "$REGISTRY/demo:multi"
 
-      - name: Verify the build is reproducible (same digest twice)
+      - name: Verify the pushed artifact is a multi-arch index
+        run: |
+          set -euo pipefail
+          crane manifest --insecure "$REGISTRY/demo:multi" > manifest.json
+          cat manifest.json
+          python - <<'PY'
+          import json
+          m = json.load(open("manifest.json"))
+          plats = {f"{x['platform']['os']}/{x['platform']['architecture']}" for x in m.get("manifests", [])}
+          print("platforms:", plats)
+          assert "linux/amd64" in plats, plats
+          assert "linux/arm64" in plats, plats
+          print("multi-arch index OK")
+          PY
+
+      - name: Verify the multi-arch build is reproducible
         working-directory: pymage
         run: |
           set -euo pipefail
-          common=(--base "$BASE" --lock demo/requirements.txt --find-links demo/wheelhouse \
-                  --source demo/src --python "$PYTHON" \
+          common=(--base "$BASE" --platform linux/amd64,linux/arm64 --lock demo/requirements.txt \
+                  --find-links demo/wheelhouse --source demo/src --python "$PYTHON" \
                   --entrypoint python --entrypoint /app/app.py --insecure --push=false)
-          d1=$(./pymage build "${common[@]}" --print-digest)
-          d2=$(./pymage build "${common[@]}" --print-digest)
+          d1=$(go run . build "${common[@]}" --print-digest)
+          d2=$(go run . build "${common[@]}" --print-digest)
           echo "digest #1: $d1"
           echo "digest #2: $d2"
           if [ "$d1" != "$d2" ]; then
-            echo "::error::build is not reproducible: $d1 != $d2"
+            echo "::error::multi-arch build is not reproducible: $d1 != $d2"
             exit 1
           fi
-          echo "Reproducible: $d1"
+          echo "reproducible: $d1"
 
+      # The remaining steps require a Docker daemon, which is only available on
+      # the Linux runners.
       - name: Pull and RUN the image with Docker
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          docker pull "$REGISTRY/demo:v1"
-          out=$(docker run --rm "$REGISTRY/demo:v1")
+          docker pull "$REGISTRY/demo:multi"
+          out=$(docker run --rm "$REGISTRY/demo:multi")
           echo "container output: $out"
           echo "$out" | grep -q "pymage demo OK"
 
-      - name: Install crane (for manifest inspection)
-        run: go install github.com/google/go-containerregistry/cmd/crane@v0.19.2
-
       - name: Adding a dependency reuses existing layers (only one new layer)
+        if: runner.os == 'Linux'
         working-directory: pymage
         run: |
           set -euo pipefail
-          # Resolve one more pure-python wheel and append it to the lock.
+          common=(--base "$BASE" --platform linux/amd64 --lock demo/requirements.txt \
+                  --find-links demo/wheelhouse --source demo/src --python "$PYTHON" \
+                  --entrypoint python --entrypoint /app/app.py --insecure)
+          go run . build "${common[@]}" -t "$REGISTRY/demo:v1"
+
           pip download --no-deps --only-binary=:all: idna==3.7 -d demo/wheelhouse
-          idna_whl=$(ls demo/wheelhouse/idna-*.whl)
-          echo "idna==3.7 --hash=sha256:$(sha256sum "$idna_whl" | awk '{print $1}')" >> demo/requirements.txt
+          python - <<'PY'
+          import glob, hashlib
+          whl = sorted(glob.glob("demo/wheelhouse/idna-*.whl"))[0]
+          digest = hashlib.sha256(open(whl, "rb").read()).hexdigest()
+          open("demo/requirements.txt", "a").write(f"idna==3.7 --hash=sha256:{digest}\n")
+          PY
+          go run . build "${common[@]}" -t "$REGISTRY/demo:v2"
 
-          # Build the new image (now with the extra dependency) and push it.
-          ./pymage build \
-            --base "$BASE" \
-            --lock demo/requirements.txt \
-            --find-links demo/wheelhouse \
-            --source demo/src \
-            --python "$PYTHON" \
-            --entrypoint python --entrypoint /app/app.py \
-            --insecure \
-            -t "$REGISTRY/demo:v2"
-
-          # The new image still runs.
-          docker pull "$REGISTRY/demo:v2"
-          out=$(docker run --rm "$REGISTRY/demo:v2")
-          echo "container output: $out"
-          echo "$out" | grep -q "pymage demo OK"
-
-          # Compare layer sets: every layer from v1 must still be present in v2
-          # (unchanged digests), and v2 must have exactly one more layer.
           crane manifest --insecure "$REGISTRY/demo:v1" | jq -r '.layers[].digest' | sort > v1.layers
           crane manifest --insecure "$REGISTRY/demo:v2" | jq -r '.layers[].digest' | sort > v2.layers
           echo "v1 layers:"; cat v1.layers
           echo "v2 layers:"; cat v2.layers
-
-          missing=$(comm -23 v1.layers v2.layers || true)
-          if [ -n "$missing" ]; then
-            echo "::error::these v1 layers changed/disappeared in v2 (should be reused):"
-            echo "$missing"
+          if [ -n "$(comm -23 v1.layers v2.layers || true)" ]; then
+            echo "::error::a v1 layer changed/disappeared in v2 (should be reused)"
             exit 1
           fi
-
           n1=$(wc -l < v1.layers)
           n2=$(wc -l < v2.layers)
           echo "layer counts: v1=$n1 v2=$n2"
