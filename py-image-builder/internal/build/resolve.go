@@ -13,8 +13,8 @@ import (
 // Base resolves a base image reference to a v1.Image for the given platform.
 // Only the base manifest and config are fetched; its layer blobs are referenced
 // by digest and never downloaded.
-func Base(ctx context.Context, ref string, platform *v1.Platform, kc authn.Keychain) (v1.Image, error) {
-	r, err := name.ParseReference(ref)
+func Base(ctx context.Context, ref string, platform *v1.Platform, kc authn.Keychain, nameOpts ...name.Option) (v1.Image, error) {
+	r, err := name.ParseReference(ref, nameOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("build: parse base ref %q: %w", ref, err)
 	}

@@ -57,6 +57,7 @@ type buildFlags struct {
 	printDigest bool
 	sbomOut     string
 	requireHash bool
+	insecure    bool
 }
 
 func buildCmd() *cobra.Command {
@@ -90,6 +91,7 @@ func buildCmd() *cobra.Command {
 	fs.BoolVar(&f.printDigest, "print-digest", false, "print only the resulting image digest")
 	fs.StringVar(&f.sbomOut, "sbom", "", "write a CycloneDX SBOM to this path")
 	fs.BoolVar(&f.requireHash, "require-hashes", true, "require every requirement to carry --hash entries")
+	fs.BoolVar(&f.insecure, "insecure", false, "use plain HTTP for the registry")
 	return cmd
 }
 
@@ -124,7 +126,12 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		}
 	}
 
-	base, err := resolveBase(ctx, f.base, platform)
+	var nameOpts []name.Option
+	if f.insecure {
+		nameOpts = append(nameOpts, name.Insecure)
+	}
+
+	base, err := resolveBase(ctx, f.base, platform, nameOpts...)
 	if err != nil {
 		return err
 	}
@@ -189,7 +196,7 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		if f.tag == "" {
 			return fmt.Errorf("--tag is required to push (or use --push=false)")
 		}
-		ref, err := name.ParseReference(f.tag)
+		ref, err := name.ParseReference(f.tag, nameOpts...)
 		if err != nil {
 			return err
 		}
@@ -207,11 +214,11 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 	return nil
 }
 
-func resolveBase(ctx context.Context, ref string, platform *v1.Platform) (v1.Image, error) {
+func resolveBase(ctx context.Context, ref string, platform *v1.Platform, nameOpts ...name.Option) (v1.Image, error) {
 	if ref == "scratch" {
 		return empty.Image, nil
 	}
-	return build.Base(ctx, ref, platform, authn.DefaultKeychain)
+	return build.Base(ctx, ref, platform, authn.DefaultKeychain, nameOpts...)
 }
 
 func keyValues(in []string) (map[string]string, error) {
