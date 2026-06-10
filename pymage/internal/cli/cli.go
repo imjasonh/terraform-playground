@@ -337,17 +337,27 @@ func output(cmd *cobra.Command, f *buildFlags, nameOpts []name.Option, img v1.Im
 	if len(tags) == 0 {
 		tags = []string{"latest"}
 	}
-	opts := []remote.Option{
-		remote.WithContext(ctx),
+
+	var artifact remote.Taggable = img
+	if idx != nil {
+		artifact = idx
+	}
+
+	// A single Pusher is shared across all tags: it uploads layers (and, for an
+	// index, child manifests) concurrently, and reuses its per-repo upload state
+	// so identical blobs are only checked/uploaded once even across tags.
+	pusher, err := remote.NewPusher(
 		remote.WithAuthFromKeychain(authn.DefaultKeychain),
-		// Upload layers (and, for an index, child manifests) concurrently.
 		remote.WithJobs(pushConcurrency(f.pushJobs)),
+	)
+	if err != nil {
+		return err
 	}
 	// The artifact is pushed by content; each tag is just another pointer to
 	// the same digest.
 	for _, t := range tags {
 		ref := repo.Tag(t)
-		if err := writeArtifact(ref, img, idx, opts...); err != nil {
+		if err := pusher.Push(ctx, ref, artifact); err != nil {
 			return fmt.Errorf("push %s: %w", ref, err)
 		}
 		_, _ = fmt.Fprintf(stderr, "tagged %s -> %s@%s\n", ref, repo.Name(), digest)
@@ -363,13 +373,6 @@ func artifactDigest(img v1.Image, idx v1.ImageIndex) (v1.Hash, error) {
 		return idx.Digest()
 	}
 	return img.Digest()
-}
-
-func writeArtifact(ref name.Reference, img v1.Image, idx v1.ImageIndex, opts ...remote.Option) error {
-	if idx != nil {
-		return remote.WriteIndex(ref, idx, opts...)
-	}
-	return remote.Write(ref, img, opts...)
 }
 
 func writeLayout(dir string, img v1.Image, idx v1.ImageIndex) error {
