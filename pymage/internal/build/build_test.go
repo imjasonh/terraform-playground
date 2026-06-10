@@ -305,6 +305,42 @@ func TestBuildWithCacheIsConsistentAndPopulates(t *testing.T) {
 	}
 }
 
+// TestEnvPythonPathAccumulates ensures an extra PYTHONPATH (e.g. the app's
+// "/app/src") is appended to the venv site-packages, not substituted for it —
+// otherwise installed dependencies would be unimportable.
+func TestEnvPythonPathAccumulates(t *testing.T) {
+	dir := t.TempDir()
+	wheels := []wheelhouse.ResolvedWheel{mkWheel(t, dir, "alpha", "1.0")}
+	opts := baseOpts(wheels)
+	opts.Env = []string{"PYTHONPATH=/app/src"}
+
+	img, err := Build(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pythonPath string
+	for _, kv := range cf.Config.Env {
+		if k, v, _ := strings.Cut(kv, "="); k == "PYTHONPATH" {
+			pythonPath = v
+		}
+	}
+	site := "/app/.venv/lib/python3.12/site-packages"
+	if !strings.Contains(pythonPath, site) {
+		t.Errorf("PYTHONPATH %q missing site-packages %q", pythonPath, site)
+	}
+	if !strings.Contains(pythonPath, "/app/src") {
+		t.Errorf("PYTHONPATH %q missing app path /app/src", pythonPath)
+	}
+	// site-packages must come first so installed deps take precedence.
+	if !strings.HasPrefix(pythonPath, site) {
+		t.Errorf("PYTHONPATH %q should start with site-packages", pythonPath)
+	}
+}
+
 func TestInterpreterVersion(t *testing.T) {
 	withEnv := func(env []string) v1.Image {
 		img, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{Config: v1.Config{Env: env}})

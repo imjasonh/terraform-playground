@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -105,20 +106,15 @@ func entrypointFromPyproject(pp pyProject, root string) ([]string, []string) {
 		extraEnv = append(extraEnv, "PYTHONPATH=/app/src")
 	}
 
-	if len(pp.Project.Scripts) == 1 {
-		for name := range pp.Project.Scripts {
-			return []string{name}, extraEnv
-		}
-	}
-	if len(pp.Project.Scripts) > 1 {
-		// Prefer a script matching the project name.
-		if pp.Project.Name != "" {
-			if _, ok := pp.Project.Scripts[pp.Project.Name]; ok {
-				return []string{pp.Project.Name}, extraEnv
-			}
-		}
-		for name := range pp.Project.Scripts {
-			return []string{name}, extraEnv
+	// A [project.scripts] console script is the preferred entrypoint, but
+	// pymage copies the app *source* (it doesn't install the project as a
+	// wheel), so the launcher binary the script name refers to does not exist
+	// in the image. Translate the script's "module:attr" target into a direct
+	// `python` invocation instead, which works as long as the package is
+	// importable (it is: via PYTHONPATH for src layouts, or the workdir).
+	if _, target, ok := chooseScript(pp); ok {
+		if ep := scriptEntrypoint(target); ep != nil {
+			return ep, extraEnv
 		}
 	}
 
@@ -130,6 +126,45 @@ func entrypointFromPyproject(pp pyProject, root string) ([]string, []string) {
 		return []string{"python", "-m", pkg}, extraEnv
 	}
 	return nil, extraEnv
+}
+
+// chooseScript selects a [project.scripts] entry deterministically: the one
+// matching the project name if present, else the lexicographically first.
+func chooseScript(pp pyProject) (name, target string, ok bool) {
+	scripts := pp.Project.Scripts
+	if len(scripts) == 0 {
+		return "", "", false
+	}
+	if pp.Project.Name != "" {
+		if t, ok := scripts[pp.Project.Name]; ok {
+			return pp.Project.Name, t, true
+		}
+	}
+	names := make([]string, 0, len(scripts))
+	for n := range scripts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names[0], scripts[names[0]], true
+}
+
+// scriptEntrypoint turns a console-script target ("module:attr" or "module")
+// into an entrypoint that runs without a pre-installed launcher on PATH.
+func scriptEntrypoint(target string) []string {
+	module, attr, hasAttr := strings.Cut(target, ":")
+	module = strings.TrimSpace(module)
+	if module == "" {
+		return nil
+	}
+	attr = strings.TrimSpace(attr)
+	if !hasAttr || attr == "" {
+		return []string{"python", "-m", module}
+	}
+	root := attr
+	if i := strings.IndexByte(attr, '.'); i >= 0 {
+		root = attr[:i]
+	}
+	return []string{"python", "-c", fmt.Sprintf("import sys; from %s import %s; sys.exit(%s())", module, root, attr)}
 }
 
 func moduleDir(root, pkg string) bool {

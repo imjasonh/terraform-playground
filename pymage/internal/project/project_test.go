@@ -20,8 +20,17 @@ func TestDiscoverExample(t *testing.T) {
 	if filepath.Base(info.LockFile) != "uv.lock" {
 		t.Fatalf("lock = %q", info.LockFile)
 	}
-	if len(info.Entrypoint) != 1 || info.Entrypoint[0] != "example" {
-		t.Fatalf("entrypoint = %v", info.Entrypoint)
+	// The [project.scripts] "example = example:main" must become a direct
+	// python invocation (not a bare "example" launcher, which pymage never
+	// installs).
+	wantEP := []string{"python", "-c", "import sys; from example import main; sys.exit(main())"}
+	if len(info.Entrypoint) != len(wantEP) {
+		t.Fatalf("entrypoint = %v, want %v", info.Entrypoint, wantEP)
+	}
+	for i := range wantEP {
+		if info.Entrypoint[i] != wantEP[i] {
+			t.Fatalf("entrypoint = %v, want %v", info.Entrypoint, wantEP)
+		}
 	}
 	found := false
 	for _, e := range info.ExtraEnv {
@@ -63,6 +72,31 @@ find-links = ["wheelhouse", "/abs/wheels"]
 	want := filepath.Join(dir, "wheelhouse")
 	if got := info.Config.FindLinks; len(got) != 2 || got[0] != want || got[1] != "/abs/wheels" {
 		t.Fatalf("find-links = %v, want [%s /abs/wheels]", got, want)
+	}
+}
+
+func TestScriptEntrypoint(t *testing.T) {
+	cases := []struct {
+		target string
+		want   []string
+	}{
+		{"pkg.mod:main", []string{"python", "-c", "import sys; from pkg.mod import main; sys.exit(main())"}},
+		{"pkg:obj.method", []string{"python", "-c", "import sys; from pkg import obj; sys.exit(obj.method())"}},
+		{"pkg.cli", []string{"python", "-m", "pkg.cli"}}, // no attr -> run as module
+		{":main", nil}, // no module -> unusable
+	}
+	for _, c := range cases {
+		got := scriptEntrypoint(c.target)
+		if len(got) != len(c.want) {
+			t.Errorf("scriptEntrypoint(%q) = %v, want %v", c.target, got, c.want)
+			continue
+		}
+		for i := range c.want {
+			if got[i] != c.want[i] {
+				t.Errorf("scriptEntrypoint(%q) = %v, want %v", c.target, got, c.want)
+				break
+			}
+		}
 	}
 }
 

@@ -405,9 +405,29 @@ func mergeEnv(base []string, layout wheel.Layout, extra []string) []string {
 		}
 		env[k] = v
 	}
-	for _, kv := range base {
+
+	// PYTHONPATH is a path list, so we accumulate contributions (site-packages
+	// first, then base, then extras such as the app's "/app/src") rather than
+	// letting a later source overwrite it.
+	pythonPath := []string{site}
+	addPyPath := func(v string) {
+		for _, p := range strings.Split(v, ":") {
+			if p != "" {
+				pythonPath = append(pythonPath, p)
+			}
+		}
+	}
+	apply := func(kv string) {
 		k, v, _ := strings.Cut(kv, "=")
+		if k == "PYTHONPATH" {
+			addPyPath(v)
+			return
+		}
 		set(k, v)
+	}
+
+	for _, kv := range base {
+		apply(kv)
 	}
 
 	if existing, ok := env["PATH"]; ok && existing != "" {
@@ -416,20 +436,30 @@ func mergeEnv(base []string, layout wheel.Layout, extra []string) []string {
 		set("PATH", bin+":/usr/local/bin:/usr/bin:/bin")
 	}
 	set("VIRTUAL_ENV", prefix)
-	if existing, ok := env["PYTHONPATH"]; ok && existing != "" {
-		set("PYTHONPATH", site+":"+existing)
-	} else {
-		set("PYTHONPATH", site)
-	}
 
 	for _, kv := range extra {
-		k, v, _ := strings.Cut(kv, "=")
-		set(k, v)
+		apply(kv)
 	}
+
+	set("PYTHONPATH", strings.Join(dedupe(pythonPath), ":"))
 
 	out := make([]string, 0, len(order))
 	for _, k := range order {
 		out = append(out, k+"="+env[k])
+	}
+	return out
+}
+
+// dedupe returns s with duplicate entries removed, preserving first-seen order.
+func dedupe(s []string) []string {
+	seen := map[string]bool{}
+	out := s[:0]
+	for _, v := range s {
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
 	}
 	return out
 }
