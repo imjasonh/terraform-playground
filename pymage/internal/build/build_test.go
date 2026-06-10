@@ -13,10 +13,16 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 
 	"github.com/imjasonh/terraform-playground/pymage/internal/cache"
+	"github.com/imjasonh/terraform-playground/pymage/internal/ptar"
 	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
 )
+
+func ptarLayer(t *testing.T, name, content string) (v1.Layer, error) {
+	t.Helper()
+	return ptar.Layer([]ptar.File{{Path: name, Data: []byte(content)}})
+}
 
 func layerPaths(t *testing.T, l v1.Layer) map[string]bool {
 	t.Helper()
@@ -259,6 +265,39 @@ func TestInterpreterVersion(t *testing.T) {
 	}
 	if maj, min, ok := InterpreterVersion(withEnv([]string{"PYTHON_VERSION=3.13"})); !ok || maj != 3 || min != 13 {
 		t.Errorf("got %d.%d ok=%v, want 3.13 ok=true", maj, min, ok)
+	}
+}
+
+func TestInterpreterVersionFromAPKO(t *testing.T) {
+	// A Chainguard-style apko.json (no PYTHON_VERSION env) in the top layer.
+	apko := `{"contents":{"packages":["ca-certificates-bundle=20260413-r0","py3-pip-wheel=26.1.2-r0","python-3.14-base=3.14.5-r2","python-3.14=3.14.5-r2","zlib=1.3.2-r3"]},"entrypoint":{"command":"/usr/bin/python"}}`
+	layer, err := ptarLayer(t, "etc/apko.json", apko)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := mutate.AppendLayers(empty.Image, layer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	maj, min, ok := InterpreterVersion(img)
+	if !ok || maj != 3 || min != 14 {
+		t.Fatalf("apko fallback: got %d.%d ok=%v, want 3.14 ok=true", maj, min, ok)
+	}
+
+	// The PYTHON_VERSION env, when present, takes precedence over apko.json.
+	cf, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf = cf.DeepCopy()
+	cf.Config.Env = []string{"PYTHON_VERSION=3.12.7"}
+	imgEnv, err := mutate.ConfigFile(img, cf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maj, min, ok := InterpreterVersion(imgEnv); !ok || maj != 3 || min != 12 {
+		t.Fatalf("env precedence: got %d.%d ok=%v, want 3.12", maj, min, ok)
 	}
 }
 

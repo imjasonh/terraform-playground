@@ -73,10 +73,12 @@ A floating tag such as `cgr.dev/chainguard/python:latest` works, but be aware:
   keep working (they're matched by `py3` and found via `PYTHONPATH`), but
   version-specific compiled wheels (`cp312`…) break when the interpreter moves.
 
-To prevent silent breakage, pymage reads the base's advertised `PYTHON_VERSION`
-and **fails the build** if it doesn't match `--python`, telling you which
-version to target. (Bases that don't advertise a version can't be validated —
-another reason to pin.)
+To prevent silent breakage, pymage detects the base's Python version and
+**fails the build** if it doesn't match `--python`, telling you which version to
+target. It looks at the `PYTHON_VERSION` env var (official python images) and,
+when that's absent, the `python-X.Y` package in `/etc/apko.json` from the top
+layer (Chainguard/Wolfi images). Bases that expose neither can't be validated —
+another reason to pin.
 
 ### Useful flags
 
