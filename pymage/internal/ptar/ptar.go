@@ -17,6 +17,7 @@ package ptar
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"io"
 	"path"
 	"sort"
@@ -63,7 +64,10 @@ func WriteTar(w io.Writer, files []File) error {
 	// stable and parents always precede children.
 	dirs := map[string]struct{}{}
 	for _, f := range files {
-		clean := path.Clean(strings.TrimPrefix(f.Path, "/"))
+		clean, err := cleanPath(f.Path)
+		if err != nil {
+			return err
+		}
 		dir := path.Dir(clean)
 		for dir != "." && dir != "/" && dir != "" {
 			dirs[dir] = struct{}{}
@@ -80,11 +84,17 @@ func WriteTar(w io.Writer, files []File) error {
 	for d := range dirs {
 		entries = append(entries, entry{name: d + "/", dir: true})
 	}
+	// Collisions are surfaced as errors rather than silently keeping an
+	// arbitrary winner: within a single layer two members must not map to the
+	// same path (it would make the layer depend on input ordering).
 	seen := map[string]bool{}
 	for _, f := range files {
-		clean := path.Clean(strings.TrimPrefix(f.Path, "/"))
+		clean, err := cleanPath(f.Path)
+		if err != nil {
+			return err
+		}
 		if seen[clean] {
-			continue
+			return fmt.Errorf("ptar: duplicate path %q in layer", clean)
 		}
 		seen[clean] = true
 		entries = append(entries, entry{name: clean, file: f})
@@ -124,6 +134,24 @@ func WriteTar(w io.Writer, files []File) error {
 		}
 	}
 	return tw.Close()
+}
+
+// cleanPath returns the normalized, slash-rooted-relative archive name for p,
+// rejecting paths that would escape the archive root via "..". Absolute paths
+// are made relative.
+func cleanPath(p string) (string, error) {
+	clean := path.Clean("/" + strings.TrimPrefix(p, "/"))
+	rel := strings.TrimPrefix(clean, "/")
+	if rel == "" || rel == "." {
+		return "", fmt.Errorf("ptar: empty path %q", p)
+	}
+	// path.Clean("/"+...) already collapses any ".." that would escape the
+	// root, but a literal traversal prefix on the input is a strong signal of a
+	// malicious archive, so reject it explicitly.
+	if orig := path.Clean(p); orig == ".." || strings.HasPrefix(orig, "../") {
+		return "", fmt.Errorf("ptar: path %q escapes archive root", p)
+	}
+	return rel, nil
 }
 
 // TarBytes returns the deterministic tar stream for files.

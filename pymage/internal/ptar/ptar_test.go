@@ -76,6 +76,24 @@ func TestTarSynthesizesParentDirsAndSorts(t *testing.T) {
 	}
 }
 
+func TestWriteTarRejectsTraversal(t *testing.T) {
+	for _, p := range []string{"../etc/passwd", "../../x", "a/../../../etc/shadow"} {
+		if _, err := TarBytes([]File{{Path: p, Data: []byte("x")}}); err == nil {
+			t.Errorf("expected error for traversal path %q", p)
+		}
+	}
+}
+
+func TestWriteTarRejectsDuplicatePaths(t *testing.T) {
+	_, err := TarBytes([]File{
+		{Path: "a/x.txt", Data: []byte("1")},
+		{Path: "a/x.txt", Data: []byte("2")},
+	})
+	if err == nil {
+		t.Fatal("expected error for duplicate path")
+	}
+}
+
 func TestLayerStableDigest(t *testing.T) {
 	files := []File{
 		{Path: "site-packages/foo/__init__.py", Data: []byte("print('hi')\n")},
