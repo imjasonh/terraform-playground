@@ -32,6 +32,7 @@ type Config struct {
 	LayerStrategy  string            `toml:"layer-strategy"`
 	MaxLayers      int               `toml:"max-layers"`
 	MaxWheelLayers int               `toml:"max-wheel-layers"`
+	PushJobs       int               `toml:"push-concurrency"`
 	Python         string            `toml:"python"`
 	Prefix         string            `toml:"prefix"`
 	Workdir        string            `toml:"workdir"`

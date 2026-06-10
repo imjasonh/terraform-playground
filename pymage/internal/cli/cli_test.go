@@ -423,6 +423,15 @@ func TestBuildStdoutIsImageRef(t *testing.T) {
 	}
 }
 
+func TestPushConcurrency(t *testing.T) {
+	if got := pushConcurrency(7); got != 7 {
+		t.Errorf("explicit value not honored: got %d, want 7", got)
+	}
+	if got := pushConcurrency(0); got < 4 {
+		t.Errorf("auto concurrency = %d, want >= 4", got)
+	}
+}
+
 func TestParsePythonTag(t *testing.T) {
 	maj, min, err := parsePythonTag("python3.12")
 	if err != nil || maj != 3 || min != 12 {

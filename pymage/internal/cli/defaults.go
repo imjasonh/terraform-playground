@@ -60,6 +60,9 @@ func applyDefaults(cmd *cobra.Command, f *buildFlags) error {
 	if !changed("max-wheel-layers") && cfg.MaxWheelLayers != 0 {
 		f.maxWheelLayers = cfg.MaxWheelLayers
 	}
+	if !changed("push-concurrency") && cfg.PushJobs != 0 {
+		f.pushJobs = cfg.PushJobs
+	}
 	if !changed("python") && cfg.Python != "" {
 		f.pythonTag = cfg.Python
 	}
@@ -133,6 +136,9 @@ func validateBuildFlags(f *buildFlags) error {
 	}
 	if f.maxWheelLayers < 0 {
 		return fmt.Errorf("--max-wheel-layers must be >= 0, got %d", f.maxWheelLayers)
+	}
+	if f.pushJobs < 0 {
+		return fmt.Errorf("--push-concurrency must be >= 0, got %d", f.pushJobs)
 	}
 	if len(f.entrypoint) == 0 {
 		return fmt.Errorf("no entrypoint: set [project.scripts] in pyproject.toml, add entrypoint to [tool.pymage], or pass --entrypoint")

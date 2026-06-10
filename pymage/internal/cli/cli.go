@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -59,6 +60,7 @@ type buildFlags struct {
 
 	maxLayers      int
 	maxWheelLayers int
+	pushJobs       int
 
 	push        bool
 	ociLayout   string
@@ -103,6 +105,7 @@ func buildCmd() *cobra.Command {
 	fs.StringVar(&f.strategy, "layer-strategy", string(build.Auto), "auto | per-wheel | single-deps-layer")
 	fs.IntVar(&f.maxLayers, "max-layers", build.DefaultMaxLayers, "max total image layers (base + deps + app) for the auto strategy")
 	fs.IntVar(&f.maxWheelLayers, "max-wheel-layers", 0, "cap the number of dependency layers directly (overrides --max-layers when > 0)")
+	fs.IntVar(&f.pushJobs, "push-concurrency", 0, "max concurrent layer uploads when pushing (0 = auto)")
 	fs.BoolVar(&f.push, "push", true, "push the image to --repo (by digest)")
 	fs.StringVar(&f.ociLayout, "oci-layout", "", "also write the image to this OCI layout directory")
 	fs.BoolVar(&f.printDigest, "print-digest", false, "print only the resulting image digest")
@@ -337,6 +340,8 @@ func output(cmd *cobra.Command, f *buildFlags, nameOpts []name.Option, img v1.Im
 	opts := []remote.Option{
 		remote.WithContext(ctx),
 		remote.WithAuthFromKeychain(authn.DefaultKeychain),
+		// Upload layers (and, for an index, child manifests) concurrently.
+		remote.WithJobs(pushConcurrency(f.pushJobs)),
 	}
 	// The artifact is pushed by content; each tag is just another pointer to
 	// the same digest.
@@ -386,6 +391,20 @@ func defaultPlatformsFromBase(ctx context.Context, f *buildFlags, nameOpts []nam
 		return []v1.Platform{{}}, nil
 	}
 	return build.BasePlatforms(ctx, f.base, authn.DefaultKeychain, nameOpts...)
+}
+
+// pushConcurrency resolves the number of concurrent layer uploads. 0 means
+// auto: scale with CPU count but never below go-containerregistry's default of
+// 4 (layer uploads are network-bound, so some parallelism always helps).
+func pushConcurrency(requested int) int {
+	if requested > 0 {
+		return requested
+	}
+	n := runtime.NumCPU()
+	if n < 4 {
+		n = 4
+	}
+	return n
 }
 
 // parsePlatforms parses the (comma-split, repeatable) --platform values.

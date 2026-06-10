@@ -71,6 +71,7 @@ the config value, which overrides the built-in default.
 | `layer-strategy` | `--layer-strategy` | `auto` |
 | `max-layers` | `--max-layers` | `127` |
 | `max-wheel-layers` | `--max-wheel-layers` | *(derived from `max-layers`)* |
+| `push-concurrency` | `--push-concurrency` | auto (≥ 4, scales with CPUs) |
 | `python` | `--python` | auto-detected from the base |
 | `prefix` | `--prefix` | `/app/.venv` |
 | `workdir` | `--workdir` | `/app` |
@@ -174,6 +175,7 @@ base that advertises its version.
 | `--layer-strategy` | `auto` (default), `per-wheel`, or `single-deps-layer`. |
 | `--max-layers` | Cap on total image layers (base + deps + app) for `auto` (default 127). |
 | `--max-wheel-layers` | Cap the dependency layer count directly (overrides `--max-layers`). |
+| `--push-concurrency` | Max concurrent layer uploads when pushing (0 = auto). |
 | `--platform` | Target platform(s); selects compatible wheels and base. Repeatable / comma-separated (e.g. `linux/amd64,linux/arm64`) builds a multi-arch image index. Defaults to the platforms the base image supports. |
 | `--python` | Interpreter version, e.g. `python3.12`. Optional — **auto-detected from the base** when omitted; if set, must match the base. Drives wheel selection and the site-packages layout. |
 | `--cache-dir` | Content-addressed layer cache; reuses compressed layers and downloaded wheels across rebuilds. |
