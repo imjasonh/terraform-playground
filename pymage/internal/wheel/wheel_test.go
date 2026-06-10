@@ -46,8 +46,19 @@ func TestParseTagsWithBuildTag(t *testing.T) {
 	if tg.Name != "foo" || tg.Version != "1.0" {
 		t.Fatalf("name/version = %q %q", tg.Name, tg.Version)
 	}
+	if tg.Build != "1" || tg.BuildRank() != 1 {
+		t.Fatalf("build = %q rank=%d", tg.Build, tg.BuildRank())
+	}
 	if tg.Python != "cp312" || tg.ABI != "cp312" || tg.Platform != "manylinux2014_x86_64" {
 		t.Fatalf("tags = %+v", tg)
+	}
+
+	noBuild, err := ParseTags("foo-1.0-py3-none-any.whl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noBuild.Build != "" || noBuild.BuildRank() != 0 {
+		t.Fatalf("expected no build tag, got %q", noBuild.Build)
 	}
 }
 

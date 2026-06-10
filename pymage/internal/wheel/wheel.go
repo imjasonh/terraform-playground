@@ -154,14 +154,35 @@ func parseCPython(tag string) (maj, min int, ok bool) {
 	return maj, min, true
 }
 
-// Tags holds the compatibility tags from a wheel filename (PEP 427). Each field
-// may be a compressed set joined by ".", e.g. py2.py3 / cp36.cp37.
+// Tags holds the compatibility tags from a wheel filename (PEP 427). Each of
+// Python/ABI/Platform may be a compressed set joined by ".", e.g. py2.py3.
 type Tags struct {
 	Name     string
 	Version  string
+	Build    string // optional build tag (e.g. "1"), empty if absent
 	Python   string // pytag, e.g. "py3" or "cp312"
 	ABI      string // abitag, e.g. "none", "abi3", "cp312"
 	Platform string // plattag, e.g. "any" or "manylinux2014_x86_64"
+}
+
+// BuildRank returns the integer prefix of the build tag (0 if absent), used to
+// prefer the highest build among otherwise-equivalent wheels.
+func (t Tags) BuildRank() int {
+	if t.Build == "" {
+		return 0
+	}
+	i := 0
+	for i < len(t.Build) && t.Build[i] >= '0' && t.Build[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(t.Build[:i])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // ParseFilename extracts the distribution name and version from a wheel
@@ -185,9 +206,14 @@ func ParseTags(filename string) (Tags, error) {
 	n := len(parts)
 	plat, abi, py := parts[n-1], parts[n-2], parts[n-3]
 	head := parts[:n-3] // name, version, (build)
+	build := ""
+	if len(head) >= 3 {
+		build = head[2]
+	}
 	return Tags{
 		Name:     head[0],
 		Version:  head[1],
+		Build:    build,
 		Python:   py,
 		ABI:      abi,
 		Platform: plat,

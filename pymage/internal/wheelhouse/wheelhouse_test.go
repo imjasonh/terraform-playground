@@ -86,6 +86,23 @@ func TestResolvePrefersPlatformSpecific(t *testing.T) {
 	}
 }
 
+// TestResolvePrefersHigherBuildTag picks the highest build tag when two wheels
+// differ only by build.
+func TestResolvePrefersHigherBuildTag(t *testing.T) {
+	dir := t.TempDir()
+	writeNamed(t, dir, "pkg-1.0-1-py3-none-any.whl")
+	high := writeNamed(t, dir, "pkg-1.0-2-py3-none-any.whl")
+	reqs := []lock.Requirement{{Name: "pkg", Version: "1.0"}}
+
+	got, err := Resolve(reqs, []string{dir}, linuxAmd64Py312)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Path != high {
+		t.Fatalf("expected the higher build tag to be preferred, got %s", got[0].Path)
+	}
+}
+
 // writeNamed writes a minimal (not necessarily valid-zip) file with an exact
 // wheel filename, used only to exercise filename-based tag resolution.
 func writeNamed(t *testing.T, dir, name string) string {

@@ -98,6 +98,11 @@ func pickBest(cands []candidate) candidate {
 		if si != sj {
 			return si > sj
 		}
+		// Prefer the highest build tag (PEP 427 build-tag tie-break).
+		bi, bj := cands[i].tags.BuildRank(), cands[j].tags.BuildRank()
+		if bi != bj {
+			return bi > bj
+		}
 		return cands[i].path < cands[j].path
 	})
 	return cands[0]
