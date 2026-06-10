@@ -5,8 +5,10 @@
 
 ## 1. Goal
 
-Build OCI container images for Python applications **without a Docker daemon**, in a
-way that is fast and cheap because it exploits content-addressed layering:
+A single **CLI tool** (in the spirit of [`ko`](https://github.com/ko-build/ko))
+that builds and pushes OCI container images for Python applications **without a
+Docker daemon** — no hosted service, no infrastructure. It is fast and cheap
+because it exploits content-addressed layering:
 
 - **Wheel dependencies are split into reusable layers.** Once a layer for a given
   wheel exists, builds reuse it **without downloading the wheel or uploading the
@@ -221,7 +223,8 @@ pure-python layers), and publish an **image index** referencing each arch manife
 - Wheel "install" implemented in Go: parse the wheel zip (it is a zip with
   `*.dist-info/{RECORD,WHEEL,METADATA,entry_points.txt}`), lay files into the
   staging prefix, synthesize console scripts, write deterministic tar.
-- **CLI** first:
+- **A single CLI**, like `ko` — no daemon, no server, no infra. It builds and
+  pushes (or saves) an image in one command:
   ```
   py-image-builder build \
     --base cgr.dev/chainguard/python@sha256:... \
@@ -231,10 +234,13 @@ pure-python layers), and publish an **image index** referencing each arch manife
     --platform linux/amd64,linux/arm64 \
     -t registry.example.com/me/myapp:latest
   ```
-- Later, a thin **server** (Cloud Run, matching the pattern in `image-workflow`,
-  `iap`, `litestream`) that builds on push/dispatch, plus its own `main.tf`.
-- New self-contained module dir `py-image-builder/` with its own `go.mod`,
-  `README.md`, and (eventually) `main.tf`, mirroring repo conventions.
+  It prints the resulting image digest on success. Useful variants:
+  `--push=false` (build to local OCI layout / `--tarball`), `--print-digest`
+  (compute the would-be digest offline, no push), and standard ggcr keychain
+  auth (Docker config / cloud helpers) so it works in CI without extra setup.
+- New self-contained module dir `py-image-builder/` with its own `go.mod` and
+  `README.md`, mirroring repo conventions. **No `main.tf` / Cloud Run** — this is
+  a standalone CLI, not a hosted service.
 
 ## 10. Incremental implementation plan
 
@@ -258,7 +264,6 @@ Each phase is independently useful and reviewable.
    excluding `__pycache__`/VCS dirs.
 7. **Multi-arch + image index.**
 8. **SBOM emission**, then optional signing/provenance.
-9. **Cloud Run server + Terraform** to trigger builds (optional, repo-pattern).
 
 ## 11. Risks & open questions
 
