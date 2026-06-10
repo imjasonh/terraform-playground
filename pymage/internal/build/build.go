@@ -81,6 +81,7 @@ var defaultIgnore = []string{
 	".git", ".git/**",
 	"**/__pycache__/**", "**/*.pyc", "**/*.pyo",
 	".venv/**", "**/.pytest_cache/**", "**/.mypy_cache/**",
+	"uv.lock", "pyproject.toml", "wheelhouse", "wheelhouse/**",
 	// Avoid baking common secret material into the image.
 	"**/.env", "**/.env.*",
 	"**/*.pem", "**/*.key", "**/*.pfx", "**/*.p12",

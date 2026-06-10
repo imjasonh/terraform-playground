@@ -42,7 +42,8 @@ type buildFlags struct {
 	lockFile   string
 	findLinks  []string
 	source     string
-	tag        string
+	repo       string
+	tags       []string
 	platforms  []string
 	pythonTag  string
 	prefix     string
@@ -67,18 +68,24 @@ type buildFlags struct {
 func buildCmd() *cobra.Command {
 	f := &buildFlags{}
 	cmd := &cobra.Command{
-		Use:   "build",
+		Use:   "build [source]",
 		Short: "Build a Python application image and push it",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runBuild(cmd.Context(), f)
+		Long: "Build a Python application image and push it.\n\n" +
+			"[source] is the uv project directory to build (default: current directory).",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				f.source = args[0]
+			}
+			return runBuild(cmd, f)
 		},
 	}
 	fs := cmd.Flags()
-	fs.StringVar(&f.base, "base", "", "base image reference (required)")
-	fs.StringVar(&f.lockFile, "lock", "", "hashed requirements file (required)")
-	fs.StringArrayVar(&f.findLinks, "find-links", nil, "directory of wheels to resolve against (repeatable, required)")
-	fs.StringVar(&f.source, "source", "", "application source directory (optional)")
-	fs.StringVarP(&f.tag, "tag", "t", "", "image tag to push, e.g. registry/repo:tag")
+	fs.StringVar(&f.base, "base", "", "base image reference (default: cgr.dev/chainguard/python:latest)")
+	fs.StringVar(&f.lockFile, "lock", "", "lock file (default: uv.lock in the source directory)")
+	fs.StringArrayVar(&f.findLinks, "find-links", nil, "local wheel directory (optional; wheels are downloaded from the lock when omitted)")
+	fs.StringVar(&f.repo, "repo", "", "destination repository, pushed by digest, e.g. gcr.io/foo/bar (default: [tool.pymage] repo)")
+	fs.StringArrayVarP(&f.tags, "tag", "t", nil, "tag(s) to apply at --repo; tag component only, not a full reference (repeatable; default: [tool.pymage] tags or 'latest')")
 	fs.StringSliceVar(&f.platforms, "platform", nil, "target platform(s); repeatable or comma-separated, e.g. linux/amd64,linux/arm64 (multiple builds a multi-arch index)")
 	fs.StringVar(&f.pythonTag, "python", "", "interpreter version, e.g. python3.12 (default: auto-detected from the base image; if set, must match the base)")
 	fs.StringVar(&f.prefix, "prefix", "/app/.venv", "install prefix (venv-like root)")
@@ -90,7 +97,7 @@ func buildCmd() *cobra.Command {
 	fs.StringArrayVar(&f.labels, "label", nil, "image label KEY=VALUE (repeatable)")
 	fs.StringArrayVar(&f.ignore, "ignore", nil, "extra source ignore glob (repeatable)")
 	fs.StringVar(&f.strategy, "layer-strategy", string(build.PerWheel), "per-wheel | single-deps-layer")
-	fs.BoolVar(&f.push, "push", true, "push the image to --tag")
+	fs.BoolVar(&f.push, "push", true, "push the image to --repo (by digest)")
 	fs.StringVar(&f.ociLayout, "oci-layout", "", "also write the image to this OCI layout directory")
 	fs.BoolVar(&f.printDigest, "print-digest", false, "print only the resulting image digest")
 	fs.StringVar(&f.sbomOut, "sbom", "", "write a CycloneDX SBOM to this path")
@@ -100,15 +107,13 @@ func buildCmd() *cobra.Command {
 	return cmd
 }
 
-func runBuild(ctx context.Context, f *buildFlags) error {
-	if f.base == "" {
-		return fmt.Errorf("--base is required")
+func runBuild(cmd *cobra.Command, f *buildFlags) error {
+	ctx := cmd.Context()
+	if err := applyDefaults(cmd, f); err != nil {
+		return err
 	}
-	if f.lockFile == "" {
-		return fmt.Errorf("--lock is required")
-	}
-	if len(f.findLinks) == 0 {
-		return fmt.Errorf("--find-links is required (a directory of wheels)")
+	if err := validateBuildFlags(f); err != nil {
+		return err
 	}
 
 	if _, err := keyValues(f.env); err != nil {
@@ -119,7 +124,7 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		return fmt.Errorf("--label: %w", err)
 	}
 
-	reqs, err := lock.ParseFile(f.lockFile)
+	reqs, err := lock.ParseAny(f.lockFile)
 	if err != nil {
 		return err
 	}
@@ -138,6 +143,10 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 	}
 
 	var layerCache *cache.Cache
+	wheelCache, err := wheelCacheDir(f)
+	if err != nil {
+		return err
+	}
 	if f.cacheDir != "" {
 		layerCache, err = cache.New(f.cacheDir)
 		if err != nil {
@@ -161,9 +170,9 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		p := targets[i]
 		var pp *v1.Platform
 		if p.OS != "" || p.Architecture != "" {
-			pp = &p
+			pp = &targets[i]
 		}
-		img, deps, err := buildOne(ctx, f, reqs, pp, labels, layerCache, nameOpts)
+		img, deps, err := buildOne(ctx, f, reqs, pp, labels, layerCache, wheelCache, nameOpts)
 		if err != nil {
 			return err
 		}
@@ -195,7 +204,7 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 
 // buildOne resolves the base and wheels for a single platform and builds the
 // image, returning the resolved wheels for SBOM aggregation.
-func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platform *v1.Platform, labels map[string]string, layerCache *cache.Cache, nameOpts []name.Option) (v1.Image, []wheelhouse.ResolvedWheel, error) {
+func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platform *v1.Platform, labels map[string]string, layerCache *cache.Cache, wheelCache string, nameOpts []name.Option) (v1.Image, []wheelhouse.ResolvedWheel, error) {
 	base, err := resolveBase(ctx, f.base, platform, nameOpts...)
 	if err != nil {
 		return nil, nil, err
@@ -211,7 +220,7 @@ func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platf
 	target := platformTarget(platform)
 	target.PyMajor, target.PyMinor = major, minor
 
-	wheels, err := wheelhouse.Resolve(reqs, f.findLinks, target)
+	wheels, err := wheelhouse.ResolveContext(ctx, reqs, f.findLinks, target, wheelCache)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -298,26 +307,34 @@ func output(ctx context.Context, f *buildFlags, nameOpts []name.Option, img v1.I
 	}
 
 	if f.push {
-		if f.tag == "" {
-			return fmt.Errorf("--tag is required to push (or use --push=false)")
+		if f.repo == "" {
+			return fmt.Errorf("no repo configured: set repo in [tool.pymage] or pass --repo (or use --push=false)")
 		}
-		ref, err := name.ParseReference(f.tag, nameOpts...)
-		if err != nil {
-			return err
+		tags := f.tags
+		if len(tags) == 0 {
+			tags = []string{"latest"}
 		}
 		opts := []remote.Option{
 			remote.WithContext(ctx),
 			remote.WithAuthFromKeychain(authn.DefaultKeychain),
 		}
-		if idx != nil {
-			err = remote.WriteIndex(ref, idx, opts...)
-		} else {
-			err = remote.Write(ref, img, opts...)
+		// The image/index is pushed by content; each tag is just another
+		// pointer to the same digest.
+		for _, t := range tags {
+			ref, err := name.NewTag(f.repo+":"+t, nameOpts...)
+			if err != nil {
+				return err
+			}
+			if idx != nil {
+				err = remote.WriteIndex(ref, idx, opts...)
+			} else {
+				err = remote.Write(ref, img, opts...)
+			}
+			if err != nil {
+				return fmt.Errorf("push %s: %w", ref, err)
+			}
+			fmt.Printf("pushed %s@%s (tag %s)\n", ref.Context().Name(), digest, t)
 		}
-		if err != nil {
-			return fmt.Errorf("push: %w", err)
-		}
-		fmt.Printf("pushed %s@%s\n", ref.Context().Name(), digest)
 		return nil
 	}
 

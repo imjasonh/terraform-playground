@@ -20,44 +20,96 @@ See [`DESIGN.md`](./DESIGN.md) for the full rationale.
   small layer (and the manifest).
 - **Reproducible**: same lock + same source + same base ⇒ same image digest.
 
-## Usage
+## Usage (uv projects)
 
-```
-# --lock is a pinned + hashed requirements file
-#   (pip-compile / uv pip compile --generate-hashes)
-# --find-links is a directory of the resolved .whl files
-# --source is the application source (optional)
-pymage build \
-  --base cgr.dev/chainguard/python:latest \
-  --lock requirements.txt \
-  --find-links ./wheelhouse \
-  --source ./ \
-  --entrypoint python --entrypoint -m --entrypoint myapp \
-  -t registry.example.com/me/myapp:latest
+pymage is designed for [uv](https://docs.astral.sh/uv/) projects. Configure it
+once in `pyproject.toml` (in the spirit of [`ko`](https://github.com/ko-build/ko),
+the destination repo lives in config, not on the command line):
+
+```toml
+[tool.pymage]
+repo = "registry.example.com/me/myapp"   # pushed by digest
+base = "cgr.dev/chainguard/python:latest"
+platforms = ["linux/amd64", "linux/arm64"]
 ```
 
-The wheels referenced by the lock must be present in a `--find-links` directory
-(e.g. produced by `pip download -r requirements.txt -d ./wheelhouse`). Resolution
-is intentionally local so builds are hermetic and reproducible.
+Then, from the project root:
+
+```
+pymage build              # builds + pushes registry.example.com/me/myapp:latest
+pymage build -t v1.2.3    # ...:v1.2.3 (and -t is repeatable for multiple tags)
+pymage build ./example    # build a different project directory (positional arg)
+```
+
+The project directory is the first positional argument (default: the current
+directory).
+
+`pymage` always publishes **by digest** and prints the resulting `repo@sha256:…`.
+`-t/--tag` is the **tag component only**, never a full reference — the repo comes
+from `[tool.pymage] repo` (or `--repo`). If no `-t` is given it uses
+`[tool.pymage] tags`, defaulting to `latest`.
+
+### Configuration
+
+`[tool.pymage]` keys mirror the build flags; an explicit flag always overrides
+the config value, which overrides the built-in default.
+
+| Key | Flag | Default |
+| --- | --- | --- |
+| `repo` | `--repo` | *(required to push)* |
+| `tags` | `-t`/`--tag` (repeatable) | `["latest"]` |
+| `base` | `--base` | `cgr.dev/chainguard/python:latest` |
+| `platforms` | `--platform` | host registry default (single image) |
+| `layer-strategy` | `--layer-strategy` | `per-wheel` |
+| `python` | `--python` | auto-detected from the base |
+| `prefix` | `--prefix` | `/app/.venv` |
+| `workdir` | `--workdir` | `/app` |
+| `user` | `--user` | *(base default)* |
+| `entrypoint` | `--entrypoint` | `[project.scripts]` console script |
+| `cmd` | `--cmd` | — |
+| `env` | `--env` | `PYTHONPATH=/app/src` when `src/` exists |
+| `labels` | `--label` | — |
+| `find-links` | `--find-links` | download wheels from the lock |
+
+Other defaults: the source directory is the first positional argument (default
+`.`); the lock is `uv.lock` in that directory (falling back to
+`requirements.txt`). Wheels are fetched over the network from the lock URLs on
+first use and cached by SHA-256 in `~/.cache/pymage/wheels`; set `find-links` to
+a local wheel directory for offline / air-gapped builds.
+
+See [`example/`](./example/) for a FastAPI app with a `[tool.pymage]` table you
+can build as-is:
+
+```
+go run . build ./example --repo localhost:5000/example -t latest --insecure
+```
 
 ### Multi-arch
 
-Pass multiple platforms to build a multi-arch image **index** (one image per
-platform, assembled into an OCI index). Because no Docker daemon is involved,
-this works from any host OS — Linux, macOS, or Windows:
+Listing more than one platform (in config or via `--platform`) builds a
+multi-arch image **index** (one image per platform, assembled into an OCI
+index). Because no Docker daemon is involved, this works from any host OS —
+Linux, macOS, or Windows:
+
+```
+pymage build --platform linux/amd64,linux/arm64 -t latest
+```
+
+Each platform selects its own compatible wheels from `uv.lock` (pure-python
+wheels are shared across arches).
+
+### Hashed requirements.txt (pip-compile / uv pip compile)
+
+The original lock format is still supported (flags work in place of, or on top
+of, a `[tool.pymage]` table):
 
 ```
 pymage build \
-  --base python:3.12-slim \
-  --platform linux/amd64,linux/arm64 \
-  --lock requirements.txt --find-links ./wheelhouse --source ./ \
+  --lock requirements.txt \
+  --find-links ./wheelhouse \
   --entrypoint python --entrypoint -m --entrypoint myapp \
-  -t registry.example.com/me/myapp:latest
+  --repo registry.example.com/me/myapp -t latest
 ```
-
-Each platform selects its own compatible wheels (pure-python wheels are shared),
-so the wheelhouse must contain a compatible wheel per platform for any compiled
-dependency.
 
 ### Choosing a base image
 
@@ -93,12 +145,12 @@ base that advertises its version.
 | `--layer-strategy` | `per-wheel` (default) or `single-deps-layer`. |
 | `--platform` | Target platform(s); selects compatible wheels and base. Repeatable / comma-separated (e.g. `linux/amd64,linux/arm64`) builds a multi-arch image index. |
 | `--python` | Interpreter version, e.g. `python3.12`. Optional — **auto-detected from the base** when omitted; if set, must match the base. Drives wheel selection and the site-packages layout. |
-| `--cache-dir` | Content-addressed layer cache; reuses compressed layers across rebuilds. |
+| `--cache-dir` | Content-addressed layer cache; reuses compressed layers and downloaded wheels across rebuilds. |
 | `--prefix` | install prefix / venv root (default `/app/.venv`). |
 | `--workdir` | image working dir and source destination (default `/app`). |
 | `--user` | image user, e.g. `65532`. |
 | `--insecure` | use plain HTTP for the registry. |
-| `--require-hashes` | require `--hash` on every requirement (default true). |
+| `--require-hashes` | require `--hash` on every requirement in `requirements.txt` (default true; `uv.lock` carries its own hashes). |
 
 ## Layout
 
@@ -106,11 +158,13 @@ base that advertises its version.
 | --- | --- |
 | `internal/ptar` | Deterministic tar + OCI layer construction. |
 | `internal/wheel` | Parse a wheel and lay it out into installed files. |
-| `internal/lock` | Parse hashed `requirements.txt`. |
-| `internal/wheelhouse` | Resolve requirements to local wheel files (hash-checked). |
+| `internal/lock` | Parse `uv.lock` and hashed `requirements.txt`. |
+| `internal/wheelhouse` | Resolve wheels locally or download from lock URLs. |
+| `internal/project` | Discover lock, entrypoint, env, and `[tool.pymage]` config from a uv project. |
 | `internal/build` | Assemble base + per-wheel layers + app layer; rewrite config. |
 | `internal/sbom` | Emit a deterministic CycloneDX SBOM. |
 | `internal/cli` | The `build` command. |
+| `example/` | Sample FastAPI uv project for CI and manual testing. |
 | `e2e` | End-to-end tests against a local registry. |
 
 ## Testing

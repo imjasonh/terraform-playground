@@ -2,7 +2,8 @@
 
 > Status: **Implemented.** This document captures the architecture and rationale;
 > the builder, tests, and CI now live alongside it in this directory. Some items
-> noted as future work (e.g. a network wheel fetcher) remain unimplemented.
+> `uv.lock` ingestion and network wheel fetching are implemented; some other
+> items noted as future work remain unimplemented.
 
 ## 1. Goal
 
@@ -224,19 +225,23 @@ pure-python layers), and publish an **image index** referencing each arch manife
 - Wheel "install" implemented in Go: parse the wheel zip (it is a zip with
   `*.dist-info/{RECORD,WHEEL,METADATA,entry_points.txt}`), lay files into the
   staging prefix, synthesize console scripts, write deterministic tar.
-- **A single CLI**, like `ko` — no daemon, no server, no infra. It builds and
-  pushes (or saves) an image in one command:
+- **A single CLI**, like `ko` — no daemon, no server, no infra. Build-affecting
+  inputs live in a `[tool.pymage]` table in `pyproject.toml` (the standard PyPA
+  namespace for tool config), so the common invocation is just:
   ```
-  pymage build \
-    --base cgr.dev/chainguard/python@sha256:... \
-    --lock requirements.txt \
-    --source ./ \
-    --entrypoint "python -m myapp" \
-    --platform linux/amd64,linux/arm64 \
-    -t registry.example.com/me/myapp:latest
+  # [tool.pymage] in pyproject.toml:
+  #   repo = "registry.example.com/me/myapp"
+  #   base = "cgr.dev/chainguard/python@sha256:..."
+  #   platforms = ["linux/amd64", "linux/arm64"]
+  pymage build              # -> registry.example.com/me/myapp:latest (by digest)
+  pymage build -t v1.2.3    # tag component only; repo comes from config
   ```
-  It prints the resulting image digest on success. Useful variants:
-  `--push=false` (build to local OCI layout / `--tarball`), `--print-digest`
+  Like `ko`, the destination **repo** is configuration, not a positional/flag on
+  every run, and images are always published **by digest**; `-t/--tag` sets only
+  the tag pointer(s). Every config key has a matching flag (`--repo`, `--base`,
+  `--platform`, …) and an explicit flag overrides config, which overrides the
+  built-in default. It prints the resulting image digest on success. Useful
+  variants: `--push=false` (build to local OCI layout), `--print-digest`
   (compute the would-be digest offline, no push), and standard ggcr keychain
   auth (Docker config / cloud helpers) so it works in CI without extra setup.
 - New self-contained module dir `pymage/` with its own `go.mod` and
@@ -253,8 +258,9 @@ Each phase is independently useful and reviewable.
 2. **Wheel → layer.** Parse a wheel zip, lay out files into the fixed prefix,
    generate `RECORD`/console scripts, produce a ggcr `v1.Layer`. Golden-file tests
    asserting stable diffIDs for fixture wheels (one pure-python, one manylinux).
-3. **Lock ingestion.** Parser(s) for hashed `requirements.txt` (first), normalized
-   to `{name, version, url, sha256, tags}`. Add `uv.lock` next.
+3. **Lock ingestion.** Parser(s) for hashed `requirements.txt` and `uv.lock`,
+   normalized to `{name, version, url, sha256, tags}`. Wheels download from
+   lock URLs when not present in `--find-links`.
 4. **Local layer cache.** Content-addressed wheel + blob store and the
    `sha256 → layer meta` DB. Prove second build does zero downloads/recompression.
 5. **Image assembly + push (ggcr).** Base-by-digest, sorted dep layers, app layer,

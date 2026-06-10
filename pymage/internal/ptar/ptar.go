@@ -109,7 +109,6 @@ func WriteTar(w io.Writer, files []File) error {
 				Typeflag: tar.TypeDir,
 				Mode:     dirMode,
 				ModTime:  unixEpoch(),
-				Format:   tar.FormatPAX,
 			}); err != nil {
 				return err
 			}

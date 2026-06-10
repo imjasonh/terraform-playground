@@ -48,20 +48,20 @@ func TestBuildMultiArchIndex(t *testing.T) {
 	build := func(tag string) error {
 		cmd := Root()
 		cmd.SetArgs([]string{
-			"build",
+			"build", src,
 			"--base", baseRef,
 			"--lock", reqFile,
 			"--find-links", wh,
-			"--source", src,
 			"--platform", "linux/amd64,linux/arm64",
 			"--entrypoint", "python", "--entrypoint", "/app/app.py",
+			"--repo", host + "/multi",
 			"-t", tag,
 		})
 		cmd.SetOut(os.Stderr)
 		return cmd.Execute()
 	}
 
-	if err := build(host + "/multi:v1"); err != nil {
+	if err := build("v1"); err != nil {
 		t.Fatalf("multi-arch build failed: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestBuildMultiArchIndex(t *testing.T) {
 	d1, _ := idx.Digest()
 
 	// Reproducible: a second build yields the same index digest.
-	if err := build(host + "/multi:v2"); err != nil {
+	if err := build("v2"); err != nil {
 		t.Fatal(err)
 	}
 	ref2, _ := name.ParseReference(host + "/multi:v2")
@@ -157,11 +157,13 @@ func TestBuildRejectsInterpreterMismatch(t *testing.T) {
 	}
 
 	cmd := Root()
+	src := t.TempDir()
 	cmd.SetArgs([]string{
-		"build",
+		"build", src,
 		"--base", baseRef,
 		"--lock", reqFile,
 		"--find-links", wh,
+		"--entrypoint", "python", "--entrypoint", "/app/app.py",
 		"--python", "python3.12", // mismatches the base's 3.13
 		"--push=false",
 		"--print-digest",
@@ -173,6 +175,110 @@ func TestBuildRejectsInterpreterMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Python 3.13") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestBuildUsesPyprojectConfig drives the CLI with no --repo/--base/--platform
+// flags, proving they are sourced from [tool.pymage] in pyproject.toml.
+func TestBuildUsesPyprojectConfig(t *testing.T) {
+	s := httptest.NewServer(registry.New())
+	t.Cleanup(s.Close)
+	host := strings.TrimPrefix(s.URL, "http://")
+
+	baseRef := host + "/base:latest"
+	writeMultiArchBase(t, baseRef, []string{"amd64", "arm64"})
+
+	// A self-contained uv-style project: pyproject (with [tool.pymage]),
+	// requirements lock, a wheelhouse, and a console script entrypoint.
+	root := t.TempDir()
+	wh := filepath.Join(root, "wheelhouse")
+	if err := os.MkdirAll(wh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, shaA := testwheel.Write(t, wh, testwheel.Spec{Name: "alpha", Version: "1.0", Modules: map[string]string{"alpha/__init__.py": "V='1.0'\ndef main():\n    pass\n"}})
+	if err := os.WriteFile(filepath.Join(root, "requirements.txt"),
+		[]byte(fmt.Sprintf("alpha==1.0 --hash=sha256:%s\n", shaA)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pyproject := fmt.Sprintf(`[project]
+name = "demo"
+version = "0.1.0"
+
+[project.scripts]
+demo = "alpha:main"
+
+[tool.pymage]
+repo = %q
+base = %q
+platforms = ["linux/amd64", "linux/arm64"]
+tags = ["release", "latest"]
+`, host+"/fromconfig", baseRef)
+	if err := os.WriteFile(filepath.Join(root, "pyproject.toml"), []byte(pyproject), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := Root()
+	cmd.SetArgs([]string{
+		"build", root,
+		"--lock", filepath.Join(root, "requirements.txt"),
+		"--find-links", wh,
+		"--insecure",
+	})
+	cmd.SetOut(os.Stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("config-driven build failed: %v", err)
+	}
+
+	// Both configured tags resolve to the same multi-arch index at the
+	// configured repo.
+	relRef, _ := name.ParseReference(host+"/fromconfig:release", name.Insecure)
+	latestRef, _ := name.ParseReference(host+"/fromconfig:latest", name.Insecure)
+	relIdx, err := remote.Index(relRef, remote.WithContext(context.Background()))
+	if err != nil {
+		t.Fatalf("pull release tag from configured repo: %v", err)
+	}
+	im, err := relIdx.IndexManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(im.Manifests) != 2 {
+		t.Fatalf("expected 2 platform manifests from config, got %d", len(im.Manifests))
+	}
+	relDigest, _ := relIdx.Digest()
+	latestIdx, err := remote.Index(latestRef, remote.WithContext(context.Background()))
+	if err != nil {
+		t.Fatalf("pull latest tag: %v", err)
+	}
+	latestDigest, _ := latestIdx.Digest()
+	if relDigest != latestDigest {
+		t.Fatalf("configured tags point to different digests: %s != %s", relDigest, latestDigest)
+	}
+}
+
+// TestPushRejectsFullReferenceTag ensures -t is a tag only; a full reference
+// (with a registry/repo) is rejected so it can't be confused with --repo.
+func TestPushRejectsFullReferenceTag(t *testing.T) {
+	err := validateBuildFlags(&buildFlags{
+		lockFile:   "x",
+		entrypoint: []string{"app"},
+		push:       true,
+		repo:       "gcr.io/foo/bar",
+		tags:       []string{"registry.example.com/me/app:v1"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "tag only") {
+		t.Fatalf("expected tag-only rejection, got %v", err)
+	}
+}
+
+// TestPushRequiresRepo ensures a push with no repo configured fails clearly.
+func TestPushRequiresRepo(t *testing.T) {
+	err := validateBuildFlags(&buildFlags{
+		lockFile:   "x",
+		entrypoint: []string{"app"},
+		push:       true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "repo") {
+		t.Fatalf("expected missing-repo error, got %v", err)
 	}
 }
 
@@ -295,14 +401,14 @@ func TestBuildCommandEndToEnd(t *testing.T) {
 	run := func() error {
 		cmd := Root()
 		cmd.SetArgs([]string{
-			"build",
+			"build", src,
 			"--base", baseRef,
 			"--lock", reqFile,
 			"--find-links", wh,
-			"--source", src,
 			"--entrypoint", "python",
 			"--entrypoint", "/app/app.py",
-			"-t", tag,
+			"--repo", host + "/myapp",
+			"-t", "v1",
 		})
 		cmd.SetOut(os.Stderr)
 		return cmd.Execute()

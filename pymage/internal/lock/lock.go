@@ -12,9 +12,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
+
+// WheelRef is a pinned wheel distribution from a lockfile (e.g. uv.lock).
+type WheelRef struct {
+	URL      string
+	SHA256   string // hex digest, no "sha256:" prefix
+	Filename string // wheel file name, used for tag parsing
+}
 
 // Requirement is a single pinned distribution.
 type Requirement struct {
@@ -25,6 +33,8 @@ type Requirement struct {
 	Version string
 	// Hashes are the allowed sha256 hex digests (without the "sha256:" prefix).
 	Hashes []string
+	// Wheels lists known wheel artifacts for this pin (populated from uv.lock).
+	Wheels []WheelRef
 }
 
 var (
@@ -54,6 +64,32 @@ func ParseFile(path string) ([]Requirement, error) {
 	}
 	defer func() { _ = f.Close() }()
 	return Parse(f)
+}
+
+// ParseAny reads a lock file, choosing the parser from the filename:
+// uv.lock is parsed as TOML; everything else is treated as requirements.txt.
+func ParseAny(path string) ([]Requirement, error) {
+	if strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".lock") &&
+		!strings.HasSuffix(strings.ToLower(path), "requirements.lock") {
+		// uv.lock / poetry.lock-style names ending in .lock (not requirements.lock
+		// which is pip-compile output in requirements format).
+		if strings.EqualFold(filepath.Base(path), "uv.lock") {
+			return ParseUVLockFile(path)
+		}
+	}
+	// requirements.lock and requirements.txt both use the pip format.
+	return ParseFile(path)
+}
+
+// DiscoverLock returns the path to a lock file in dir, preferring uv.lock.
+func DiscoverLock(dir string) (string, error) {
+	for _, name := range []string{"uv.lock", "requirements.lock", "requirements.txt"} {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("no lock file found in %q (expected uv.lock or requirements.txt)", dir)
 }
 
 // Parse reads pinned requirements from r. Logical lines may span multiple

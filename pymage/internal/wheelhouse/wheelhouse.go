@@ -10,6 +10,7 @@
 package wheelhouse
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -41,42 +42,37 @@ type candidate struct {
 }
 
 // Resolve matches each requirement to a wheel file found in dirs that is
-// compatible with target, verifying its hash. Results are sorted by
-// (normalized name, version) for deterministic layer ordering.
+// compatible with target, verifying its hash. When dirs are empty or miss a
+// package, wheel URLs embedded in the lock are downloaded into wheelCacheDir.
+// Results are sorted by (normalized name, version) for deterministic ordering.
 func Resolve(reqs []lock.Requirement, dirs []string, target wheel.Target) ([]ResolvedWheel, error) {
-	index, err := scan(dirs)
+	return ResolveContext(context.Background(), reqs, dirs, target, "")
+}
+
+// ResolveContext is Resolve with an explicit context and on-disk wheel cache
+// directory for lock-file downloads.
+func ResolveContext(ctx context.Context, reqs []lock.Requirement, dirs []string, target wheel.Target, wheelCacheDir string) ([]ResolvedWheel, error) {
+	var index map[string][]candidate
+	if len(dirs) > 0 {
+		var err error
+		index, err = scan(dirs)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	cache, err := openWheelCache(wheelCacheDir)
 	if err != nil {
 		return nil, err
 	}
 
 	out := make([]ResolvedWheel, 0, len(reqs))
 	for _, req := range reqs {
-		key := lock.NormalizeName(req.Name) + "\x00" + req.Version
-		cands := index[key]
-		if len(cands) == 0 {
-			return nil, fmt.Errorf("wheelhouse: no wheel found for %s==%s in %v", req.Name, req.Version, dirs)
-		}
-
-		compatible := make([]candidate, 0, len(cands))
-		for _, c := range cands {
-			if c.tags.CompatibleWith(target) {
-				compatible = append(compatible, c)
-			}
-		}
-		if len(compatible) == 0 {
-			return nil, fmt.Errorf("wheelhouse: no wheel for %s==%s is compatible with %s/%s python%d.%d (found %d incompatible candidate(s))",
-				req.Name, req.Version, target.OS, target.Arch, target.PyMajor, target.PyMinor, len(cands))
-		}
-
-		match := pickBest(compatible)
-		sum, err := hashFile(match.path)
+		rw, err := resolveOne(ctx, req, index, target, cache)
 		if err != nil {
 			return nil, err
 		}
-		if len(req.Hashes) > 0 && !containsHash(req.Hashes, sum) {
-			return nil, fmt.Errorf("wheelhouse: %s==%s hash mismatch: file %s has sha256:%s, not in lock", req.Name, req.Version, match.path, sum)
-		}
-		out = append(out, ResolvedWheel{Name: req.Name, Version: req.Version, Path: match.path, SHA256: sum})
+		out = append(out, rw)
 	}
 
 	sort.Slice(out, func(i, j int) bool {
@@ -87,6 +83,43 @@ func Resolve(reqs []lock.Requirement, dirs []string, target wheel.Target) ([]Res
 		return out[i].Version < out[j].Version
 	})
 	return out, nil
+}
+
+func resolveOne(ctx context.Context, req lock.Requirement, index map[string][]candidate, target wheel.Target, cache *wheelCache) (ResolvedWheel, error) {
+	key := lock.NormalizeName(req.Name) + "\x00" + req.Version
+	if index != nil {
+		if cands := index[key]; len(cands) > 0 {
+			compatible := make([]candidate, 0, len(cands))
+			for _, c := range cands {
+				if c.tags.CompatibleWith(target) {
+					compatible = append(compatible, c)
+				}
+			}
+			if len(compatible) > 0 {
+				match := pickBest(compatible)
+				sum, err := hashFile(match.path)
+				if err != nil {
+					return ResolvedWheel{}, err
+				}
+				if len(req.Hashes) > 0 && !containsHash(req.Hashes, sum) {
+					return ResolvedWheel{}, fmt.Errorf("wheelhouse: %s==%s hash mismatch: file %s has sha256:%s, not in lock", req.Name, req.Version, match.path, sum)
+				}
+				return ResolvedWheel{Name: req.Name, Version: req.Version, Path: match.path, SHA256: sum}, nil
+			}
+			if len(req.Wheels) == 0 {
+				return ResolvedWheel{}, fmt.Errorf("wheelhouse: no wheel for %s==%s is compatible with %s/%s python%d.%d (found %d incompatible candidate(s))",
+					req.Name, req.Version, target.OS, target.Arch, target.PyMajor, target.PyMinor, len(cands))
+			}
+		}
+	}
+
+	if len(req.Wheels) == 0 {
+		return ResolvedWheel{}, fmt.Errorf("wheelhouse: no wheel found for %s==%s (pass --find-links or use a uv.lock with wheel URLs)", req.Name, req.Version)
+	}
+	if cache == nil {
+		return ResolvedWheel{}, fmt.Errorf("wheelhouse: %s==%s not in local wheelhouse and no wheel cache dir configured", req.Name, req.Version)
+	}
+	return fetchRequirement(ctx, req, target, cache)
 }
 
 // pickBest chooses the most specific compatible wheel: platform-specific and

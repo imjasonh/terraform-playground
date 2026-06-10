@@ -4,6 +4,7 @@ go 1.22.2
 
 require (
 	github.com/google/go-containerregistry v0.19.2
+	github.com/pelletier/go-toml/v2 v2.2.3
 	github.com/spf13/cobra v1.8.1
 )
 

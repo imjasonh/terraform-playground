@@ -21,8 +21,6 @@ jobs:
       run:
         shell: bash
     env:
-      # Python version is auto-detected from the base image (no --python flag).
-      BASE: python:3.12-slim
       REGISTRY: localhost:1338
     steps:
       - uses: actions/checkout@v6.0.2
@@ -32,9 +30,9 @@ jobs:
           go-version-file: pymage/go.mod
           cache-dependency-path: pymage/go.sum
 
-      - uses: actions/setup-python@v6.2.0
+      - uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.12"
+          version: "latest"
 
       - name: Run tests
         working-directory: pymage
@@ -46,6 +44,10 @@ jobs:
         with:
           working-directory: pymage
           version: latest
+
+      - name: Verify example uv.lock is up to date
+        working-directory: pymage/example
+        run: uv lock --check
 
       - name: Install crane
         run: |
@@ -61,59 +63,23 @@ jobs:
           done
           curl -fsS "http://$REGISTRY/v2/" >/dev/null
 
-      - name: Prepare demo app, wheelhouse, and hashed lock
+      # base + platforms come from [tool.pymage] in example/pyproject.toml; only
+      # the destination repo (--repo) and tag (-t) are supplied here.
+      - name: Build & push the example uv project (multi-arch)
         working-directory: pymage
         run: |
           set -euo pipefail
-          mkdir -p demo/wheelhouse demo/src
-
-          cat > demo/src/app.py <<'PY'
-          import click
-          import six
-
-          print("pymage demo OK | six=%s click=%s" % (six.__version__, click.__version__))
-          PY
-
-          python -m pip install --upgrade pip
-          # Pure-python wheels (py3-none-any): identical on every host OS and
-          # compatible with every target platform.
-          pip download --no-deps --only-binary=:all: \
-            six==1.16.0 click==8.1.7 -d demo/wheelhouse
-
-          # Generate a hashed lock with the interpreter (portable across OSes,
-          # unlike sha256sum vs shasum differences).
-          python - <<'PY'
-          import glob, hashlib, os
-          lines = []
-          for whl in sorted(glob.glob("demo/wheelhouse/*.whl")):
-              parts = os.path.basename(whl)[:-4].split("-")
-              name, version = parts[0], parts[1]
-              digest = hashlib.sha256(open(whl, "rb").read()).hexdigest()
-              lines.append(f"{name}=={version} --hash=sha256:{digest}")
-          open("demo/requirements.txt", "w").write("\n".join(lines) + "\n")
-          print(open("demo/requirements.txt").read())
-          PY
-
-      - name: Build & push a multi-arch (linux/amd64 + linux/arm64) image
-        working-directory: pymage
-        run: |
-          set -euo pipefail
-          go run . build \
-            --base "$BASE" \
-            --platform linux/amd64,linux/arm64 \
-            --lock demo/requirements.txt \
-            --find-links demo/wheelhouse \
-            --source demo/src \
-            --entrypoint python --entrypoint /app/app.py \
-            --insecure \
-            -t "$REGISTRY/demo:multi"
+          go run . build ./example \
+            --repo "$REGISTRY/example" \
+            -t multi \
+            --insecure
 
       - name: Verify the pushed artifact is a multi-arch index
         run: |
           set -euo pipefail
-          crane manifest --insecure "$REGISTRY/demo:multi" > manifest.json
+          crane manifest --insecure "$REGISTRY/example:multi" > manifest.json
           cat manifest.json
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           m = json.load(open("manifest.json"))
           plats = {f"{x['platform']['os']}/{x['platform']['architecture']}" for x in m.get("manifests", [])}
@@ -127,9 +93,7 @@ jobs:
         working-directory: pymage
         run: |
           set -euo pipefail
-          common=(--base "$BASE" --platform linux/amd64,linux/arm64 --lock demo/requirements.txt \
-                  --find-links demo/wheelhouse --source demo/src \
-                  --entrypoint python --entrypoint /app/app.py --insecure --push=false)
+          common=(./example --platform linux/amd64,linux/arm64 --insecure --push=false)
           d1=$(go run . build "${common[@]}" --print-digest)
           d2=$(go run . build "${common[@]}" --print-digest)
           echo "digest #1: $d1"
@@ -142,45 +106,63 @@ jobs:
 
       # The remaining steps require a Docker daemon, which is only available on
       # the Linux runners.
-      - name: Pull and RUN the image with Docker
+      - name: Run the example image with Docker
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          docker pull "$REGISTRY/demo:multi"
-          out=$(docker run --rm "$REGISTRY/demo:multi")
-          echo "container output: $out"
-          echo "$out" | grep -q "pymage demo OK"
+          docker pull "$REGISTRY/example:multi"
+          cid=$(docker run -d -p 18080:8080 "$REGISTRY/example:multi")
+          trap 'docker rm -f "$cid"' EXIT
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:18080/healthz && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/healthz | grep -q healthy
 
-      - name: Adding a dependency reuses existing layers (only one new layer)
+      - name: Layer reuse with a local wheelhouse (one new layer per dep)
         if: runner.os == 'Linux'
         working-directory: pymage
         run: |
           set -euo pipefail
-          common=(--base "$BASE" --platform linux/amd64 --lock demo/requirements.txt \
-                  --find-links demo/wheelhouse --source demo/src \
-                  --entrypoint python --entrypoint /app/app.py --insecure)
-          go run . build "${common[@]}" -t "$REGISTRY/demo:v1"
-
+          mkdir -p demo/wheelhouse demo/src
+          cat > demo/src/app.py <<'PY'
+          import click
+          import six
+          print("pymage demo OK | six=%s click=%s" % (six.__version__, click.__version__))
+          PY
+          python3 -m pip install --upgrade pip
+          pip download --no-deps --only-binary=:all: \
+            six==1.16.0 click==8.1.7 -d demo/wheelhouse
+          python3 - <<'PY'
+          import glob, hashlib, os
+          lines = []
+          for whl in sorted(glob.glob("demo/wheelhouse/*.whl")):
+              parts = os.path.basename(whl)[:-4].split("-")
+              name, version = parts[0], parts[1]
+              digest = hashlib.sha256(open(whl, "rb").read()).hexdigest()
+              lines.append(f"{name}=={version} --hash=sha256:{digest}")
+          open("demo/requirements.txt", "w").write("\n".join(lines) + "\n")
+          PY
+          common=(demo/src --base python:3.12-slim --platform linux/amd64 --lock demo/requirements.txt \
+                  --find-links demo/wheelhouse \
+                  --entrypoint python --entrypoint /app/app.py --insecure --repo "$REGISTRY/demo")
+          go run . build "${common[@]}" -t v1
           pip download --no-deps --only-binary=:all: idna==3.7 -d demo/wheelhouse
-          python - <<'PY'
+          python3 - <<'PY'
           import glob, hashlib
           whl = sorted(glob.glob("demo/wheelhouse/idna-*.whl"))[0]
           digest = hashlib.sha256(open(whl, "rb").read()).hexdigest()
           open("demo/requirements.txt", "a").write(f"idna==3.7 --hash=sha256:{digest}\n")
           PY
-          go run . build "${common[@]}" -t "$REGISTRY/demo:v2"
-
+          go run . build "${common[@]}" -t v2
           crane manifest --insecure "$REGISTRY/demo:v1" | jq -r '.layers[].digest' | sort > v1.layers
           crane manifest --insecure "$REGISTRY/demo:v2" | jq -r '.layers[].digest' | sort > v2.layers
-          echo "v1 layers:"; cat v1.layers
-          echo "v2 layers:"; cat v2.layers
           if [ -n "$(comm -23 v1.layers v2.layers || true)" ]; then
             echo "::error::a v1 layer changed/disappeared in v2 (should be reused)"
             exit 1
           fi
           n1=$(wc -l < v1.layers)
           n2=$(wc -l < v2.layers)
-          echo "layer counts: v1=$n1 v2=$n2"
           if [ "$n2" -ne "$((n1 + 1))" ]; then
             echo "::error::expected exactly one new layer, got $n1 -> $n2"
             exit 1
