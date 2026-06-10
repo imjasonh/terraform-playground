@@ -55,13 +55,11 @@ func TestDiscoverExample(t *testing.T) {
 
 func TestConfigFindLinksRelativeToRoot(t *testing.T) {
 	dir := t.TempDir()
-	pyproject := `[project]
-name = "demo"
-version = "0.1.0"
-
-[tool.pymage]
-find-links = ["wheelhouse", "/abs/wheels"]
-`
+	absWheels := t.TempDir() // absolute on every OS (incl. Windows drive letters)
+	// TOML literal strings (single quotes) so Windows backslashes aren't treated
+	// as escapes.
+	pyproject := "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n" +
+		"[tool.pymage]\nfind-links = ['wheelhouse', '" + absWheels + "']\n"
 	mustWrite(t, filepath.Join(dir, "pyproject.toml"), pyproject)
 	mustWrite(t, filepath.Join(dir, "requirements.txt"), "alpha==1.0\n")
 
@@ -70,8 +68,8 @@ find-links = ["wheelhouse", "/abs/wheels"]
 		t.Fatal(err)
 	}
 	want := filepath.Join(dir, "wheelhouse")
-	if got := info.Config.FindLinks; len(got) != 2 || got[0] != want || got[1] != "/abs/wheels" {
-		t.Fatalf("find-links = %v, want [%s /abs/wheels]", got, want)
+	if got := info.Config.FindLinks; len(got) != 2 || got[0] != want || got[1] != absWheels {
+		t.Fatalf("find-links = %v, want [%s %s]", got, want, absWheels)
 	}
 }
 
