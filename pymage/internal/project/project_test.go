@@ -98,6 +98,28 @@ func TestScriptEntrypoint(t *testing.T) {
 	}
 }
 
+func TestConfigLayerBudget(t *testing.T) {
+	dir := t.TempDir()
+	pyproject := "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n" +
+		"[tool.pymage]\nmax-layers = 50\nmax-wheel-layers = 8\nlayer-strategy = \"auto\"\n"
+	mustWrite(t, filepath.Join(dir, "pyproject.toml"), pyproject)
+	mustWrite(t, filepath.Join(dir, "requirements.txt"), "alpha==1.0\n")
+
+	info, err := Discover(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Config.MaxLayers != 50 {
+		t.Errorf("max-layers = %d, want 50", info.Config.MaxLayers)
+	}
+	if info.Config.MaxWheelLayers != 8 {
+		t.Errorf("max-wheel-layers = %d, want 8", info.Config.MaxWheelLayers)
+	}
+	if info.Config.LayerStrategy != "auto" {
+		t.Errorf("layer-strategy = %q, want auto", info.Config.LayerStrategy)
+	}
+}
+
 func mustWrite(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {

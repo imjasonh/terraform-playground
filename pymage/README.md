@@ -68,7 +68,9 @@ the config value, which overrides the built-in default.
 | `tags` | `-t`/`--tag` (repeatable) | `["latest"]` |
 | `base` | `--base` | `cgr.dev/chainguard/python:latest` |
 | `platforms` | `--platform` | the platforms the **base image** supports |
-| `layer-strategy` | `--layer-strategy` | `per-wheel` |
+| `layer-strategy` | `--layer-strategy` | `auto` |
+| `max-layers` | `--max-layers` | `127` |
+| `max-wheel-layers` | `--max-wheel-layers` | *(derived from `max-layers`)* |
 | `python` | `--python` | auto-detected from the base |
 | `prefix` | `--prefix` | `/app/.venv` |
 | `workdir` | `--workdir` | `/app` |
@@ -109,6 +111,21 @@ Building more than one platform assembles one image per platform into an OCI
 index. Because no Docker daemon is involved, this works from any host OS — Linux,
 macOS, or Windows. Each platform selects its own compatible wheels from `uv.lock`
 (pure-python wheels are shared across arches).
+
+### Layer budget (`auto`)
+
+By default (`layer-strategy = "auto"`) pymage keeps **one layer per wheel** for
+maximum reuse, as long as the total image stays within a layer budget — `127`
+layers by default (`max-layers`, counting the base image's layers, the
+dependency layers, and the app source layer). Set `max-wheel-layers` to cap the
+dependency layers directly.
+
+When there are more wheels than the budget allows, pymage **bin-packs** them by
+hashing each distribution's (normalized) name to a stable bucket. Because a
+wheel's bucket depends only on its name, adding, removing, or version-bumping a
+single dependency only changes **that one bucket's layer** — every other layer
+keeps its digest and is reused. (`per-wheel` forces one layer per wheel with no
+cap; `single-deps-layer` puts everything in one layer.)
 
 ### Hashed requirements.txt (pip-compile / uv pip compile)
 
@@ -154,7 +171,9 @@ base that advertises its version.
 | `--oci-layout DIR` | Also write the image to an OCI layout directory. |
 | `--print-digest` | Print only the resulting image digest (no push). |
 | `--sbom PATH` | Write a CycloneDX SBOM of the resolved wheels. |
-| `--layer-strategy` | `per-wheel` (default) or `single-deps-layer`. |
+| `--layer-strategy` | `auto` (default), `per-wheel`, or `single-deps-layer`. |
+| `--max-layers` | Cap on total image layers (base + deps + app) for `auto` (default 127). |
+| `--max-wheel-layers` | Cap the dependency layer count directly (overrides `--max-layers`). |
 | `--platform` | Target platform(s); selects compatible wheels and base. Repeatable / comma-separated (e.g. `linux/amd64,linux/arm64`) builds a multi-arch image index. Defaults to the platforms the base image supports. |
 | `--python` | Interpreter version, e.g. `python3.12`. Optional — **auto-detected from the base** when omitted; if set, must match the base. Drives wheel selection and the site-packages layout. |
 | `--cache-dir` | Content-addressed layer cache; reuses compressed layers and downloaded wheels across rebuilds. |

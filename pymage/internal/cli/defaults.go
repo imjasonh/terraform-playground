@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/imjasonh/terraform-playground/pymage/internal/build"
 	"github.com/imjasonh/terraform-playground/pymage/internal/project"
 )
 
@@ -52,6 +53,12 @@ func applyDefaults(cmd *cobra.Command, f *buildFlags) error {
 	}
 	if !changed("layer-strategy") && cfg.LayerStrategy != "" {
 		f.strategy = cfg.LayerStrategy
+	}
+	if !changed("max-layers") && cfg.MaxLayers != 0 {
+		f.maxLayers = cfg.MaxLayers
+	}
+	if !changed("max-wheel-layers") && cfg.MaxWheelLayers != 0 {
+		f.maxWheelLayers = cfg.MaxWheelLayers
 	}
 	if !changed("python") && cfg.Python != "" {
 		f.pythonTag = cfg.Python
@@ -113,6 +120,19 @@ func wheelCacheDir(f *buildFlags) (string, error) {
 func validateBuildFlags(f *buildFlags) error {
 	if f.lockFile == "" {
 		return fmt.Errorf("no lock file found (expected uv.lock in the source directory, or pass --lock)")
+	}
+	// "" is the zero value meaning the default (Auto); a 0 budget likewise means
+	// "use the default", so only reject genuinely invalid values.
+	switch f.strategy {
+	case "", string(build.Auto), string(build.PerWheel), string(build.SingleDepsLayer):
+	default:
+		return fmt.Errorf("invalid --layer-strategy %q (want auto, per-wheel, or single-deps-layer)", f.strategy)
+	}
+	if f.maxLayers < 0 {
+		return fmt.Errorf("--max-layers must be >= 1, got %d", f.maxLayers)
+	}
+	if f.maxWheelLayers < 0 {
+		return fmt.Errorf("--max-wheel-layers must be >= 0, got %d", f.maxWheelLayers)
 	}
 	if len(f.entrypoint) == 0 {
 		return fmt.Errorf("no entrypoint: set [project.scripts] in pyproject.toml, add entrypoint to [tool.pymage], or pass --entrypoint")

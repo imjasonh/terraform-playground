@@ -112,13 +112,18 @@ across all arches.
 
 Per-wheel layering maximizes reuse but a large dependency tree can exceed practical
 limits (registries/runtimes tolerate many layers, but ~100+ tiny blobs slow pulls
-and some tooling caps near 127). Strategies, selectable via flag:
+and some tooling caps near 127). Strategies, selectable via flag/config:
 
-- `per-wheel` (default): best reuse, one layer per dist.
-- `hybrid`: large/heavily-shared wheels get their own layer; the long tail of tiny
-  wheels is **bin-packed by a stable partition** (e.g. hash of name into K buckets)
-  so adding a dep usually perturbs only one bucket layer. Bounded layer count,
-  slightly weaker "only-new-dep" guarantee for bucketed deps.
+- `auto` (**default, implemented**): one layer per wheel while the total image
+  layer count fits a budget — `max-layers` (default **127**, counting base +
+  deps + app), or `max-wheel-layers` to cap dependency layers directly. When the
+  wheel count exceeds the budget, wheels are **bin-packed by hashing each
+  distribution's normalized name into K = budget buckets**. Because a wheel's
+  bucket depends only on its name, adding/removing/version-bumping one dependency
+  changes only that one bucket's layer; every other layer keeps its digest. This
+  is reuse-optimal for a fixed budget (size-balanced packing was rejected because
+  it reshuffles on insert).
+- `per-wheel`: best reuse, one layer per dist, no cap.
 - `single-deps-layer`: all deps in one layer + app layer. Simplest, weakest reuse
   (any dep change rebuilds the whole deps layer). Useful for tiny apps.
 

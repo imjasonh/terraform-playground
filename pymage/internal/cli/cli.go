@@ -57,6 +57,9 @@ type buildFlags struct {
 	ignore     []string
 	strategy   string
 
+	maxLayers      int
+	maxWheelLayers int
+
 	push        bool
 	ociLayout   string
 	printDigest bool
@@ -97,7 +100,9 @@ func buildCmd() *cobra.Command {
 	fs.StringVar(&f.user, "user", "", "image user, e.g. 65532")
 	fs.StringArrayVar(&f.labels, "label", nil, "image label KEY=VALUE (repeatable)")
 	fs.StringArrayVar(&f.ignore, "ignore", nil, "extra source ignore glob (repeatable)")
-	fs.StringVar(&f.strategy, "layer-strategy", string(build.PerWheel), "per-wheel | single-deps-layer")
+	fs.StringVar(&f.strategy, "layer-strategy", string(build.Auto), "auto | per-wheel | single-deps-layer")
+	fs.IntVar(&f.maxLayers, "max-layers", build.DefaultMaxLayers, "max total image layers (base + deps + app) for the auto strategy")
+	fs.IntVar(&f.maxWheelLayers, "max-wheel-layers", 0, "cap the number of dependency layers directly (overrides --max-layers when > 0)")
 	fs.BoolVar(&f.push, "push", true, "push the image to --repo (by digest)")
 	fs.StringVar(&f.ociLayout, "oci-layout", "", "also write the image to this OCI layout directory")
 	fs.BoolVar(&f.printDigest, "print-digest", false, "print only the resulting image digest")
@@ -238,19 +243,21 @@ func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platf
 		return nil, nil, err
 	}
 	img, err := build.Build(build.Options{
-		Base:       base,
-		Wheels:     wheels,
-		Layout:     wheel.Layout{Prefix: f.prefix, PythonTag: pyTag},
-		Strategy:   build.LayerStrategy(f.strategy),
-		SourceDir:  f.source,
-		Ignore:     f.ignore,
-		WorkingDir: f.workingDir,
-		Entrypoint: f.entrypoint,
-		Cmd:        f.cmd,
-		Env:        f.env,
-		User:       f.user,
-		Labels:     labels,
-		Cache:      layerCache,
+		Base:           base,
+		Wheels:         wheels,
+		Layout:         wheel.Layout{Prefix: f.prefix, PythonTag: pyTag},
+		Strategy:       build.LayerStrategy(f.strategy),
+		MaxLayers:      f.maxLayers,
+		MaxWheelLayers: f.maxWheelLayers,
+		SourceDir:      f.source,
+		Ignore:         f.ignore,
+		WorkingDir:     f.workingDir,
+		Entrypoint:     f.entrypoint,
+		Cmd:            f.cmd,
+		Env:            f.env,
+		User:           f.user,
+		Labels:         labels,
+		Cache:          layerCache,
 	})
 	if err != nil {
 		return nil, nil, err

@@ -25,20 +25,22 @@ type Info struct {
 // a build flag of the same name; flags passed on the command line take
 // precedence over these values, which take precedence over built-in defaults.
 type Config struct {
-	Repo          string            `toml:"repo"`
-	Tags          []string          `toml:"tags"`
-	Base          string            `toml:"base"`
-	Platforms     []string          `toml:"platforms"`
-	LayerStrategy string            `toml:"layer-strategy"`
-	Python        string            `toml:"python"`
-	Prefix        string            `toml:"prefix"`
-	Workdir       string            `toml:"workdir"`
-	User          string            `toml:"user"`
-	Entrypoint    []string          `toml:"entrypoint"`
-	Cmd           []string          `toml:"cmd"`
-	Env           []string          `toml:"env"`
-	Labels        map[string]string `toml:"labels"`
-	FindLinks     []string          `toml:"find-links"`
+	Repo           string            `toml:"repo"`
+	Tags           []string          `toml:"tags"`
+	Base           string            `toml:"base"`
+	Platforms      []string          `toml:"platforms"`
+	LayerStrategy  string            `toml:"layer-strategy"`
+	MaxLayers      int               `toml:"max-layers"`
+	MaxWheelLayers int               `toml:"max-wheel-layers"`
+	Python         string            `toml:"python"`
+	Prefix         string            `toml:"prefix"`
+	Workdir        string            `toml:"workdir"`
+	User           string            `toml:"user"`
+	Entrypoint     []string          `toml:"entrypoint"`
+	Cmd            []string          `toml:"cmd"`
+	Env            []string          `toml:"env"`
+	Labels         map[string]string `toml:"labels"`
+	FindLinks      []string          `toml:"find-links"`
 }
 
 const defaultBase = "cgr.dev/chainguard/python:latest"
