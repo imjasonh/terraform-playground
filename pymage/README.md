@@ -67,7 +67,7 @@ the config value, which overrides the built-in default.
 | `repo` | `--repo` | *(required to push)* |
 | `tags` | `-t`/`--tag` (repeatable) | `["latest"]` |
 | `base` | `--base` | `cgr.dev/chainguard/python:latest` |
-| `platforms` | `--platform` | host registry default (single image) |
+| `platforms` | `--platform` | the platforms the **base image** supports |
 | `layer-strategy` | `--layer-strategy` | `per-wheel` |
 | `python` | `--python` | auto-detected from the base |
 | `prefix` | `--prefix` | `/app/.venv` |
@@ -94,17 +94,21 @@ go run . build ./example --repo localhost:5000/example -t latest --insecure
 
 ### Multi-arch
 
-Listing more than one platform (in config or via `--platform`) builds a
-multi-arch image **index** (one image per platform, assembled into an OCI
-index). Because no Docker daemon is involved, this works from any host OS —
-Linux, macOS, or Windows:
+When `--platform` is omitted, pymage builds for **exactly the platforms the base
+image supports** — so a multi-arch base (e.g. `cgr.dev/chainguard/python`, which
+ships `linux/amd64` + `linux/arm64`) produces a multi-arch image **index** with
+no extra flags, and a single-arch base produces a single image. You can override
+this by listing platforms explicitly (in config or via `--platform`):
 
 ```
+pymage build                                   # match the base's platforms
 pymage build --platform linux/amd64,linux/arm64 -t latest
 ```
 
-Each platform selects its own compatible wheels from `uv.lock` (pure-python
-wheels are shared across arches).
+Building more than one platform assembles one image per platform into an OCI
+index. Because no Docker daemon is involved, this works from any host OS — Linux,
+macOS, or Windows. Each platform selects its own compatible wheels from `uv.lock`
+(pure-python wheels are shared across arches).
 
 ### Hashed requirements.txt (pip-compile / uv pip compile)
 
@@ -151,7 +155,7 @@ base that advertises its version.
 | `--print-digest` | Print only the resulting image digest (no push). |
 | `--sbom PATH` | Write a CycloneDX SBOM of the resolved wheels. |
 | `--layer-strategy` | `per-wheel` (default) or `single-deps-layer`. |
-| `--platform` | Target platform(s); selects compatible wheels and base. Repeatable / comma-separated (e.g. `linux/amd64,linux/arm64`) builds a multi-arch image index. |
+| `--platform` | Target platform(s); selects compatible wheels and base. Repeatable / comma-separated (e.g. `linux/amd64,linux/arm64`) builds a multi-arch image index. Defaults to the platforms the base image supports. |
 | `--python` | Interpreter version, e.g. `python3.12`. Optional — **auto-detected from the base** when omitted; if set, must match the base. Drives wheel selection and the site-packages layout. |
 | `--cache-dir` | Content-addressed layer cache; reuses compressed layers and downloaded wheels across rebuilds. |
 | `--prefix` | install prefix / venv root (default `/app/.venv`). |

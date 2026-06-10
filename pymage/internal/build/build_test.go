@@ -2,15 +2,20 @@ package build
 
 import (
 	"archive/tar"
+	"context"
 	"io"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/imjasonh/terraform-playground/pymage/internal/cache"
 	"github.com/imjasonh/terraform-playground/pymage/internal/ptar"
@@ -18,6 +23,58 @@ import (
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
 )
+
+func TestBasePlatforms(t *testing.T) {
+	s := httptest.NewServer(registry.New())
+	t.Cleanup(s.Close)
+	host := strings.TrimPrefix(s.URL, "http://")
+	ctx := context.Background()
+
+	mk := func(os, arch string) v1.Image {
+		img, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{OS: os, Architecture: arch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return img
+	}
+
+	// A multi-arch index with an attestation-style "unknown" entry that must be
+	// ignored.
+	idx := mutate.AppendManifests(empty.Index,
+		mutate.IndexAddendum{Add: mk("linux", "amd64"), Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "amd64"}}},
+		mutate.IndexAddendum{Add: mk("linux", "arm64"), Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "arm64"}}},
+		mutate.IndexAddendum{Add: mk("unknown", "unknown"), Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "unknown", Architecture: "unknown"}}},
+	)
+	idxRef, _ := name.ParseReference(host + "/multi:latest")
+	if err := remote.WriteIndex(idxRef, idx, remote.WithContext(ctx)); err != nil {
+		t.Fatal(err)
+	}
+
+	plats, err := BasePlatforms(ctx, host+"/multi:latest", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, p := range plats {
+		got[p.OS+"/"+p.Architecture] = true
+	}
+	if len(plats) != 2 || !got["linux/amd64"] || !got["linux/arm64"] {
+		t.Fatalf("index platforms = %v, want linux/amd64 + linux/arm64 (no unknown)", plats)
+	}
+
+	// A plain single-arch image returns its one platform.
+	imgRef, _ := name.ParseReference(host + "/single:latest")
+	if err := remote.Write(imgRef, mk("linux", "arm64"), remote.WithContext(ctx)); err != nil {
+		t.Fatal(err)
+	}
+	plats, err = BasePlatforms(ctx, host+"/single:latest", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plats) != 1 || plats[0].OS != "linux" || plats[0].Architecture != "arm64" {
+		t.Fatalf("single platforms = %v, want [linux/arm64]", plats)
+	}
+}
 
 func ptarLayer(t *testing.T, name, content string) (v1.Layer, error) {
 	t.Helper()

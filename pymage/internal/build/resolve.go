@@ -48,6 +48,70 @@ const apkoMaxBytes = 4 << 20
 // "-base" suffix), as found in a Chainguard/Wolfi image's apko.json.
 var pythonPkgRE = regexp.MustCompile(`^python-(\d+)\.(\d+)(?:-base)?$`)
 
+// BasePlatforms returns the platforms a base reference supports: the entries of
+// its image index (minus attestation/"unknown" placeholders), or the single
+// platform from a plain image's config. It is used to default the build's
+// target platforms to whatever the base provides.
+func BasePlatforms(ctx context.Context, ref string, kc authn.Keychain, nameOpts ...name.Option) ([]v1.Platform, error) {
+	r, err := name.ParseReference(ref, nameOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("build: parse base ref %q: %w", ref, err)
+	}
+	if kc == nil {
+		kc = authn.DefaultKeychain
+	}
+	desc, err := remote.Get(r, remote.WithContext(ctx), remote.WithAuthFromKeychain(kc))
+	if err != nil {
+		return nil, fmt.Errorf("build: inspect base %q: %w", ref, err)
+	}
+
+	if desc.MediaType.IsIndex() {
+		idx, err := desc.ImageIndex()
+		if err != nil {
+			return nil, err
+		}
+		im, err := idx.IndexManifest()
+		if err != nil {
+			return nil, err
+		}
+		var plats []v1.Platform
+		seen := map[string]bool{}
+		for _, m := range im.Manifests {
+			p := m.Platform
+			if p == nil || p.OS == "" || p.Architecture == "" {
+				continue
+			}
+			// Skip attestation/SBOM placeholders (buildx uses unknown/unknown).
+			if p.OS == "unknown" || p.Architecture == "unknown" {
+				continue
+			}
+			key := p.OS + "/" + p.Architecture + "/" + p.Variant
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			plats = append(plats, v1.Platform{OS: p.OS, Architecture: p.Architecture, Variant: p.Variant})
+		}
+		if len(plats) == 0 {
+			return nil, fmt.Errorf("build: base index %q advertises no usable platforms", ref)
+		}
+		return plats, nil
+	}
+
+	img, err := desc.Image()
+	if err != nil {
+		return nil, err
+	}
+	cf, err := img.ConfigFile()
+	if err != nil {
+		return nil, err
+	}
+	if cf.OS == "" || cf.Architecture == "" {
+		return nil, fmt.Errorf("build: base image %q has no platform in its config", ref)
+	}
+	return []v1.Platform{{OS: cf.OS, Architecture: cf.Architecture, Variant: cf.Variant}}, nil
+}
+
 // InterpreterVersion reports the Python X.Y the base image provides.
 //
 // It first checks a PYTHON_VERSION env var (set by the official python images),

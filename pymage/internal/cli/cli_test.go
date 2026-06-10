@@ -106,6 +106,64 @@ func TestBuildMultiArchIndex(t *testing.T) {
 	}
 }
 
+// TestBuildDefaultsToBasePlatforms verifies that, without --platform, the build
+// targets exactly the platforms the base image advertises.
+func TestBuildDefaultsToBasePlatforms(t *testing.T) {
+	ctx := context.Background()
+	s := httptest.NewServer(registry.New())
+	t.Cleanup(s.Close)
+	host := strings.TrimPrefix(s.URL, "http://")
+
+	// Multi-arch base (amd64 + arm64), advertising its Python version.
+	baseRef := host + "/base:latest"
+	writeMultiArchBase(t, baseRef, []string{"amd64", "arm64"})
+
+	wh := t.TempDir()
+	_, sha := testwheel.Write(t, wh, testwheel.Spec{Name: "alpha", Version: "1.0", Modules: map[string]string{"alpha/__init__.py": "V='1'\n"}})
+	reqFile := filepath.Join(t.TempDir(), "requirements.txt")
+	if err := os.WriteFile(reqFile, []byte(fmt.Sprintf("alpha==1.0 --hash=sha256:%s\n", sha)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "app.py"), []byte("print('hi')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := Root()
+	cmd.SetArgs([]string{
+		"build", src,
+		"--base", baseRef,
+		"--lock", reqFile,
+		"--find-links", wh,
+		"--entrypoint", "python", "--entrypoint", "/app/app.py",
+		"--repo", host + "/app",
+		// no --platform: should default to the base's amd64 + arm64
+	})
+	cmd.SetOut(os.Stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+
+	ref, _ := name.ParseReference(host + "/app:latest")
+	idx, err := remote.Index(ref, remote.WithContext(ctx))
+	if err != nil {
+		t.Fatalf("expected a multi-arch index by default: %v", err)
+	}
+	im, err := idx.IndexManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, m := range im.Manifests {
+		if m.Platform != nil {
+			got[m.Platform.OS+"/"+m.Platform.Architecture] = true
+		}
+	}
+	if len(im.Manifests) != 2 || !got["linux/amd64"] || !got["linux/arm64"] {
+		t.Fatalf("default index platforms = %v, want linux/amd64 + linux/arm64", got)
+	}
+}
+
 func writeMultiArchBase(t *testing.T, ref string, arches []string) {
 	t.Helper()
 	var adds []mutate.IndexAddendum

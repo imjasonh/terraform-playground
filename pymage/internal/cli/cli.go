@@ -149,6 +149,15 @@ func runBuild(cmd *cobra.Command, f *buildFlags) error {
 		nameOpts = append(nameOpts, name.Insecure)
 	}
 
+	// With no platform requested, default to whatever the base image supports
+	// (a multi-arch base yields a multi-arch build).
+	if len(platforms) == 0 {
+		platforms, err = defaultPlatformsFromBase(ctx, f, nameOpts)
+		if err != nil {
+			return err
+		}
+	}
+
 	var layerCache *cache.Cache
 	wheelCache, err := wheelCacheDir(f)
 	if err != nil {
@@ -170,9 +179,6 @@ func runBuild(cmd *cobra.Command, f *buildFlags) error {
 		allDeps []wheelhouse.ResolvedWheel
 	)
 	targets := platforms
-	if len(targets) == 0 {
-		targets = []v1.Platform{{}} // single build using registry defaults
-	}
 	for i := range targets {
 		p := targets[i]
 		var pp *v1.Platform
@@ -363,6 +369,16 @@ func writeLayout(dir string, img v1.Image, idx v1.ImageIndex) error {
 		return p.AppendIndex(idx)
 	}
 	return p.AppendImage(img)
+}
+
+// defaultPlatformsFromBase returns the platforms to build for when --platform
+// is not given: those advertised by the base image. A scratch base has no
+// registry metadata, so it falls back to a single registry-default build.
+func defaultPlatformsFromBase(ctx context.Context, f *buildFlags, nameOpts []name.Option) ([]v1.Platform, error) {
+	if f.base == "scratch" {
+		return []v1.Platform{{}}, nil
+	}
+	return build.BasePlatforms(ctx, f.base, authn.DefaultKeychain, nameOpts...)
 }
 
 // parsePlatforms parses the (comma-split, repeatable) --platform values.
