@@ -7,29 +7,10 @@ on:
       - ".github/workflows/py-image-builder.yaml"
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6.0.2
-
-      - uses: actions/setup-go@v6.2.0
-        with:
-          go-version-file: py-image-builder/go.mod
-          cache-dependency-path: py-image-builder/go.sum
-
-      - name: Run tests
-        working-directory: py-image-builder
-        run: go test -race ./...
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v9.2.0
-        with:
-          working-directory: py-image-builder
-          version: latest
-
-  demo:
-    # Demonstrates the docker-less builder end to end against a real registry,
-    # then pulls and RUNS the built image with Docker to prove it works.
+  ci:
+    # Runs the unit + e2e test suite and lint, then demonstrates the docker-less
+    # builder end to end against a real registry, pulling and RUNNING the built
+    # image with Docker to prove it works.
     runs-on: ubuntu-latest
     services:
       registry:
@@ -51,6 +32,16 @@ jobs:
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.12"
+
+      - name: Run tests
+        working-directory: py-image-builder
+        run: go test -race ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9.2.0
+        with:
+          working-directory: py-image-builder
+          version: latest
 
       - name: Build the CLI
         working-directory: py-image-builder
