@@ -119,15 +119,13 @@ func Parse(r io.Reader) ([]Requirement, error) {
 }
 
 func stripComment(s string) string {
-	// A '#' starts a comment unless escaped; requirements files don't escape so
-	// we treat the first unquoted '#' as a comment start.
-	if i := strings.Index(s, " #"); i >= 0 {
-		return s[:i]
+	// A '#' starts a comment. Requirements files don't support escaping '#',
+	// and no valid pinned/hashed line contains one, so we strip from the first
+	// '#' and drop any trailing whitespace it leaves behind.
+	if i := strings.IndexByte(s, '#'); i >= 0 {
+		s = s[:i]
 	}
-	if strings.HasPrefix(strings.TrimSpace(s), "#") {
-		return ""
-	}
-	return s
+	return strings.TrimRight(s, " \t")
 }
 
 func isOption(s string) bool {

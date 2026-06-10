@@ -92,6 +92,26 @@ requests[socks,security]==2.31.0 --hash=sha256:` + strings.Repeat("a", 64) + `
 	}
 }
 
+func TestStripsInlineComments(t *testing.T) {
+	h := strings.Repeat("a", 64)
+	for _, in := range []string{
+		"flask==2.3.3 --hash=sha256:" + h + " # via app", // space before #
+		"flask==2.3.3 --hash=sha256:" + h + "#no-space",  // no space before #
+		"flask==2.3.3 --hash=sha256:" + h + "\t# tabbed", // tab before #
+	} {
+		reqs, err := Parse(strings.NewReader(in))
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", in, err)
+		}
+		if len(reqs) != 1 || reqs[0].Name != "flask" || reqs[0].Version != "2.3.3" {
+			t.Fatalf("Parse(%q) = %+v", in, reqs)
+		}
+		if len(reqs[0].Hashes) != 1 {
+			t.Errorf("Parse(%q): expected hash to survive comment stripping, got %v", in, reqs[0].Hashes)
+		}
+	}
+}
+
 func TestNormalizeName(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"Flask", "flask"},

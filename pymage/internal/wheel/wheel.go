@@ -379,11 +379,23 @@ func parseConsoleScripts(s string) map[string]entryPoint {
 		}
 		name = strings.TrimSpace(name)
 		target = strings.TrimSpace(target)
+		// Entry-point targets may carry an optional "[extras]" suffix
+		// (e.g. "pkg.mod:main [cli]"); it is not part of the import path and
+		// must be stripped or the generated launcher is invalid Python.
+		if i := strings.IndexByte(target, '['); i >= 0 {
+			target = strings.TrimSpace(target[:i])
+		}
 		module, attr, _ := strings.Cut(target, ":")
+		module = strings.TrimSpace(module)
+		attr = strings.TrimSpace(attr)
+		if module == "" {
+			// Without a module we cannot generate a valid launcher.
+			continue
+		}
 		if attr == "" {
 			attr = "main"
 		}
-		out[name] = entryPoint{module: strings.TrimSpace(module), attr: strings.TrimSpace(attr)}
+		out[name] = entryPoint{module: module, attr: attr}
 	}
 	return out
 }

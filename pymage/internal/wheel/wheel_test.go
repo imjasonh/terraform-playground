@@ -151,6 +151,51 @@ func TestFilesLayout(t *testing.T) {
 	}
 }
 
+func TestConsoleScriptExtrasStripped(t *testing.T) {
+	dir := t.TempDir()
+	path, _ := testwheel.Write(t, dir, testwheel.Spec{
+		Name:    "tool",
+		Version: "1.0",
+		Modules: map[string]string{"tool/cli.py": "def main():\n    pass\n"},
+		ConsoleScripts: map[string]string{
+			"tool":    "tool.cli:main [fast]", // extras must be stripped
+			"broken":  ":main",                // no module: must be skipped
+			"colored": "tool.cli:main[color]", // extras with no space
+		},
+	})
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+
+	files, err := w.Files(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]string{}
+	for _, f := range files {
+		byPath[f.Path] = string(f.Data)
+	}
+
+	bin := "app/.venv/bin/"
+	for _, name := range []string{"tool", "colored"} {
+		body, ok := byPath[bin+name]
+		if !ok {
+			t.Fatalf("missing console script %q", name)
+		}
+		if strings.Contains(body, "[") {
+			t.Errorf("script %q still contains extras:\n%s", name, body)
+		}
+		if !strings.Contains(body, "from tool.cli import main") || !strings.Contains(body, "sys.exit(main())") {
+			t.Errorf("script %q has unexpected body:\n%s", name, body)
+		}
+	}
+	if _, ok := byPath[bin+"broken"]; ok {
+		t.Error("module-less entry point should not produce a launcher")
+	}
+}
+
 func TestFilesDeterministic(t *testing.T) {
 	path := writeFixture(t)
 	digest := func() string {
