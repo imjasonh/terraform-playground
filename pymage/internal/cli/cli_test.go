@@ -129,6 +129,53 @@ func writeMultiArchBase(t *testing.T, ref string, arches []string) {
 	}
 }
 
+// TestBuildRejectsInterpreterMismatch ensures a base advertising a different
+// Python version than --python fails fast (the floating-tag drift guard).
+func TestBuildRejectsInterpreterMismatch(t *testing.T) {
+	s := httptest.NewServer(registry.New())
+	t.Cleanup(s.Close)
+	host := strings.TrimPrefix(s.URL, "http://")
+
+	baseRef := host + "/base:py313"
+	img, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{
+		OS: "linux", Architecture: "amd64",
+		Config: v1.Config{Env: []string{"PYTHON_VERSION=3.13.1", "PATH=/usr/bin"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := name.ParseReference(baseRef)
+	if err := remote.Write(r, img, remote.WithContext(context.Background())); err != nil {
+		t.Fatal(err)
+	}
+
+	wh := t.TempDir()
+	_, sha := testwheel.Write(t, wh, testwheel.Spec{Name: "alpha", Version: "1.0", Modules: map[string]string{"alpha/__init__.py": "V='1'\n"}})
+	reqFile := filepath.Join(t.TempDir(), "requirements.txt")
+	if err := os.WriteFile(reqFile, []byte(fmt.Sprintf("alpha==1.0 --hash=sha256:%s\n", sha)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := Root()
+	cmd.SetArgs([]string{
+		"build",
+		"--base", baseRef,
+		"--lock", reqFile,
+		"--find-links", wh,
+		"--python", "python3.12", // mismatches the base's 3.13
+		"--push=false",
+		"--print-digest",
+	})
+	cmd.SetOut(os.Stderr)
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected build to fail on interpreter mismatch")
+	}
+	if !strings.Contains(err.Error(), "Python 3.13") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestParsePythonTag(t *testing.T) {
 	maj, min, err := parsePythonTag("python3.12")
 	if err != nil || maj != 3 || min != 12 {

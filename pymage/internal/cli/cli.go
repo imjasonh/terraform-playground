@@ -208,6 +208,14 @@ func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platf
 	if err != nil {
 		return nil, nil, err
 	}
+	// If the base advertises its interpreter version, make sure it matches the
+	// requested --python. This catches a floating base tag (e.g. ":latest")
+	// sliding to a Python version that the selected wheels/layout don't target,
+	// which would otherwise silently produce a broken image.
+	if maj, min, ok := build.InterpreterVersion(base); ok && (maj != target.PyMajor || min != target.PyMinor) {
+		return nil, nil, fmt.Errorf("base %q provides Python %d.%d but --python is python%d.%d; pass --python python%d.%d (or pin a matching base)",
+			f.base, maj, min, target.PyMajor, target.PyMinor, maj, min)
+	}
 	img, err := build.Build(build.Options{
 		Base:       base,
 		Wheels:     wheels,

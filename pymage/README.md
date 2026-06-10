@@ -59,6 +59,25 @@ Each platform selects its own compatible wheels (pure-python wheels are shared),
 so the wheelhouse must contain a compatible wheel per platform for any compiled
 dependency.
 
+### Choosing a base image
+
+The base is an input to the build, so it affects reproducibility just like the
+lock and source do. **Pin it by digest** (e.g.
+`cgr.dev/chainguard/python@sha256:…`) for stable, no-bytes rebuilds.
+
+A floating tag such as `cgr.dev/chainguard/python:latest` works, but be aware:
+
+- it makes the base an *uncontrolled input*, so rebuilds aren't reproducible and
+  may push fresh base layers whenever the tag moves; and
+- `:latest` slides forward across Python **minor versions**. Pure-python wheels
+  keep working (they're matched by `py3` and found via `PYTHONPATH`), but
+  version-specific compiled wheels (`cp312`…) break when the interpreter moves.
+
+To prevent silent breakage, pymage reads the base's advertised `PYTHON_VERSION`
+and **fails the build** if it doesn't match `--python`, telling you which
+version to target. (Bases that don't advertise a version can't be validated —
+another reason to pin.)
+
 ### Useful flags
 
 | Flag | Description |

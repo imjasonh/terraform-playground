@@ -10,6 +10,7 @@ import (
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 
 	"github.com/imjasonh/terraform-playground/pymage/internal/cache"
 	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
@@ -238,6 +239,26 @@ func TestBuildWithCacheIsConsistentAndPopulates(t *testing.T) {
 	d3, _ := img3.Digest()
 	if d3 != d1 {
 		t.Fatalf("cached vs uncached digest differ: %s != %s", d1, d3)
+	}
+}
+
+func TestInterpreterVersion(t *testing.T) {
+	withEnv := func(env []string) v1.Image {
+		img, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{Config: v1.Config{Env: env}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return img
+	}
+
+	if maj, min, ok := InterpreterVersion(withEnv([]string{"PYTHON_VERSION=3.12.11", "PATH=/usr/bin"})); !ok || maj != 3 || min != 12 {
+		t.Errorf("got %d.%d ok=%v, want 3.12 ok=true", maj, min, ok)
+	}
+	if _, _, ok := InterpreterVersion(withEnv([]string{"PATH=/usr/bin"})); ok {
+		t.Error("expected ok=false when no PYTHON_VERSION is advertised")
+	}
+	if maj, min, ok := InterpreterVersion(withEnv([]string{"PYTHON_VERSION=3.13"})); !ok || maj != 3 || min != 13 {
+		t.Errorf("got %d.%d ok=%v, want 3.13 ok=true", maj, min, ok)
 	}
 }
 

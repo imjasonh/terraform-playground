@@ -3,6 +3,8 @@ package build
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -33,4 +35,33 @@ func Base(ctx context.Context, ref string, platform *v1.Platform, kc authn.Keych
 		return nil, fmt.Errorf("build: fetch base %q: %w", ref, err)
 	}
 	return img, nil
+}
+
+// InterpreterVersion reports the Python X.Y advertised by the base image via a
+// PYTHON_VERSION env var (set by the official python images and others). When a
+// base does not advertise one, ok is false and the caller cannot validate the
+// interpreter — a reason to pin a known base rather than rely on a floating
+// tag. It reads only the (already-fetched) config, never layer bytes.
+func InterpreterVersion(img v1.Image) (major, minor int, ok bool) {
+	cf, err := img.ConfigFile()
+	if err != nil || cf == nil {
+		return 0, 0, false
+	}
+	for _, kv := range cf.Config.Env {
+		k, v, found := strings.Cut(kv, "=")
+		if !found || k != "PYTHON_VERSION" {
+			continue
+		}
+		parts := strings.SplitN(v, ".", 3)
+		if len(parts) < 2 {
+			return 0, 0, false
+		}
+		maj, err1 := strconv.Atoi(parts[0])
+		min, err2 := strconv.Atoi(parts[1])
+		if err1 != nil || err2 != nil {
+			return 0, 0, false
+		}
+		return maj, min, true
+	}
+	return 0, 0, false
 }
