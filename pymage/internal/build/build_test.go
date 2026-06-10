@@ -3,6 +3,7 @@ package build
 import (
 	"archive/tar"
 	"context"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -79,6 +80,292 @@ func TestBasePlatforms(t *testing.T) {
 func ptarLayer(t *testing.T, name, content string) (v1.Layer, error) {
 	t.Helper()
 	return ptar.Layer([]ptar.File{{Path: name, Data: []byte(content)}})
+}
+
+func imageLayerDigests(t *testing.T, img v1.Image) []string {
+	t.Helper()
+	ls, err := img.Layers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]string, len(ls))
+	for i, l := range ls {
+		d, err := l.Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[i] = d.String()
+	}
+	return out
+}
+
+func commonCount(a, b []string) int {
+	set := map[string]bool{}
+	for _, x := range a {
+		set[x] = true
+	}
+	n := 0
+	for _, x := range b {
+		if set[x] {
+			n++
+		}
+	}
+	return n
+}
+
+// baseWithLayers returns a synthetic image with n distinct layers.
+func baseWithLayers(t *testing.T, n int) v1.Image {
+	t.Helper()
+	img := empty.Image
+	for i := 0; i < n; i++ {
+		l, err := ptarLayer(t, fmt.Sprintf("base/file%02d.txt", i), fmt.Sprintf("content-%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, err = mutate.AppendLayers(img, l)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return img
+}
+
+func makeWheels(t *testing.T, dir string, n int) []wheelhouse.ResolvedWheel {
+	t.Helper()
+	ws := make([]wheelhouse.ResolvedWheel, n)
+	for i := 0; i < n; i++ {
+		ws[i] = mkWheel(t, dir, fmt.Sprintf("pkg%02d", i), "1.0")
+	}
+	return ws
+}
+
+func TestPackWheels(t *testing.T) {
+	dir := t.TempDir()
+	wheels := makeWheels(t, dir, 10)
+
+	// Under budget: one group per wheel.
+	groups := packWheels(wheels, 20)
+	if len(groups) != 10 {
+		t.Fatalf("under budget: got %d groups, want 10", len(groups))
+	}
+	for _, g := range groups {
+		if len(g) != 1 {
+			t.Fatalf("under budget group has %d wheels, want 1", len(g))
+		}
+	}
+
+	// Over budget: at most `budget` groups, every wheel present exactly once,
+	// and deterministic across calls.
+	g1 := packWheels(wheels, 4)
+	g2 := packWheels(wheels, 4)
+	if len(g1) > 4 || len(g1) == 0 {
+		t.Fatalf("over budget: got %d groups, want 1..4", len(g1))
+	}
+	if !sameGroups(g1, g2) {
+		t.Fatal("packWheels is not deterministic")
+	}
+	seen := map[string]int{}
+	for _, g := range g1 {
+		for _, w := range g {
+			seen[w.Name]++
+		}
+	}
+	if len(seen) != 10 {
+		t.Fatalf("packed %d distinct wheels, want 10", len(seen))
+	}
+	for n, c := range seen {
+		if c != 1 {
+			t.Fatalf("wheel %s appears %d times", n, c)
+		}
+	}
+}
+
+func sameGroups(a, b [][]wheelhouse.ResolvedWheel) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if len(a[i]) != len(b[i]) {
+			return false
+		}
+		for j := range a[i] {
+			if a[i][j].Name != b[i][j].Name {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func TestBucketIndexStableAndInRange(t *testing.T) {
+	for _, k := range []int{1, 3, 7, 16} {
+		for _, name := range []string{"Flask", "flask", "requests", "typing_extensions"} {
+			i1 := bucketIndex(name, k)
+			i2 := bucketIndex(name, k)
+			if i1 != i2 {
+				t.Errorf("bucketIndex(%q,%d) not stable: %d vs %d", name, k, i1, i2)
+			}
+			if i1 < 0 || i1 >= k {
+				t.Errorf("bucketIndex(%q,%d)=%d out of range", name, k, i1)
+			}
+		}
+	}
+	// Normalized names land in the same bucket.
+	if bucketIndex("Flask", 8) != bucketIndex("flask", 8) {
+		t.Error("normalized-equivalent names should share a bucket")
+	}
+}
+
+func autoOpts(base v1.Image, wheels []wheelhouse.ResolvedWheel) Options {
+	return Options{
+		Base:           base,
+		Wheels:         wheels,
+		Layout:         testLayout,
+		Strategy:       Auto,
+		MaxWheelLayers: 4,
+		WorkingDir:     "/app",
+		Entrypoint:     []string{"python", "-m", "app"},
+	}
+}
+
+func TestAutoBinPacksToBudget(t *testing.T) {
+	dir := t.TempDir()
+	img, err := Build(autoOpts(empty.Image, makeWheels(t, dir, 12)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	layers := imageLayerDigests(t, img) // empty base, no source => all dep layers
+	if len(layers) > 4 {
+		t.Fatalf("got %d layers, want <= 4 (budget)", len(layers))
+	}
+	if len(layers) >= 12 {
+		t.Fatalf("expected packing, got %d layers for 12 wheels", len(layers))
+	}
+}
+
+// TestAutoAddingDepChangesOneLayer is the core reuse guarantee under packing:
+// adding a brand-new dependency perturbs at most one existing layer.
+func TestAutoAddingDepChangesOneLayer(t *testing.T) {
+	dir := t.TempDir()
+	wheels := makeWheels(t, dir, 12)
+
+	img1, err := Build(autoOpts(empty.Image, wheels))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := imageLayerDigests(t, img1)
+
+	withNew := append(append([]wheelhouse.ResolvedWheel{}, wheels...), mkWheel(t, dir, "newpkg", "1.0"))
+	img2, err := Build(autoOpts(empty.Image, withNew))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := imageLayerDigests(t, img2)
+
+	common := commonCount(before, after)
+	if len(before)-common > 1 {
+		t.Fatalf("adding one dep changed %d existing layers (want <= 1): before=%d common=%d", len(before)-common, len(before), common)
+	}
+}
+
+// TestAutoVersionBumpChangesOneLayer: bumping one wheel's version changes only
+// the bucket that holds it.
+func TestAutoVersionBumpChangesOneLayer(t *testing.T) {
+	dir := t.TempDir()
+	wheels := makeWheels(t, dir, 12)
+
+	img1, err := Build(autoOpts(empty.Image, wheels))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := imageLayerDigests(t, img1)
+
+	bumped := append([]wheelhouse.ResolvedWheel{}, wheels...)
+	bumped[5] = mkWheel(t, dir, "pkg05", "2.0") // same name, new version
+	img2, err := Build(autoOpts(empty.Image, bumped))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := imageLayerDigests(t, img2)
+
+	if len(after) != len(before) {
+		t.Fatalf("version bump changed layer count: %d -> %d", len(before), len(after))
+	}
+	common := commonCount(before, after)
+	if len(before)-common > 1 {
+		t.Fatalf("version bump changed %d layers (want <= 1)", len(before)-common)
+	}
+}
+
+func TestAutoBudgetFromMaxLayersAccountsForBaseAndApp(t *testing.T) {
+	dir := t.TempDir()
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "main.py"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := baseWithLayers(t, 3)
+
+	opts := Options{
+		Base:       base,
+		Wheels:     makeWheels(t, dir, 12),
+		Layout:     testLayout,
+		Strategy:   Auto,
+		MaxLayers:  6, // 3 base + 1 app reserved => 2 wheel layers
+		SourceDir:  src,
+		WorkingDir: "/app",
+		Entrypoint: []string{"python", "-m", "app"},
+	}
+	img, err := Build(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := len(imageLayerDigests(t, img))
+	dep := total - 3 /*base*/ - 1 /*app*/
+	if dep > 2 {
+		t.Fatalf("dep layers = %d, want <= 2 (budget from max-layers)", dep)
+	}
+	if total > 6 {
+		t.Fatalf("total layers = %d, want <= max-layers 6", total)
+	}
+}
+
+func TestAutoBudgetClampsWhenBaseExceedsCap(t *testing.T) {
+	dir := t.TempDir()
+	opts := Options{
+		Base:       baseWithLayers(t, 5),
+		Wheels:     makeWheels(t, dir, 12),
+		Layout:     testLayout,
+		Strategy:   Auto,
+		MaxLayers:  3, // base alone (5) already exceeds the cap
+		WorkingDir: "/app",
+		Entrypoint: []string{"python", "-m", "app"},
+	}
+	img, err := Build(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dep := len(imageLayerDigests(t, img)) - 5
+	if dep != 1 {
+		t.Fatalf("dep layers = %d, want 1 (clamped)", dep)
+	}
+}
+
+func TestAutoReproducible(t *testing.T) {
+	dir := t.TempDir()
+	wheels := makeWheels(t, dir, 12)
+	d1, err := Build(autoOpts(empty.Image, wheels))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := Build(autoOpts(empty.Image, wheels))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h1, _ := d1.Digest()
+	h2, _ := d2.Digest()
+	if h1 != h2 {
+		t.Fatalf("auto build not reproducible: %s != %s", h1, h2)
+	}
 }
 
 func layerPaths(t *testing.T, l v1.Layer) map[string]bool {

@@ -10,6 +10,7 @@ package build
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 
 	"github.com/imjasonh/terraform-playground/pymage/internal/cache"
+	"github.com/imjasonh/terraform-playground/pymage/internal/lock"
 	"github.com/imjasonh/terraform-playground/pymage/internal/ptar"
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
@@ -36,13 +38,21 @@ const layerFormatVersion = "1"
 type LayerStrategy string
 
 const (
-	// PerWheel gives each wheel its own layer. Adding a dependency creates
-	// exactly one new layer and leaves the rest byte-identical. (default)
+	// Auto keeps one layer per wheel while the total image layer count fits the
+	// budget (see MaxLayers/MaxWheelLayers), and otherwise bin-packs wheels into
+	// the budget by hashing each distribution name to a stable bucket — so a
+	// single changed/added/removed dependency only perturbs one layer. (default)
+	Auto LayerStrategy = "auto"
+	// PerWheel always gives each wheel its own layer, ignoring any budget.
 	PerWheel LayerStrategy = "per-wheel"
-	// SingleDepsLayer collapses all wheels into one layer. Simplest, but any
-	// dependency change rebuilds the whole layer.
+	// SingleDepsLayer collapses all wheels into one layer.
 	SingleDepsLayer LayerStrategy = "single-deps-layer"
 )
+
+// DefaultMaxLayers is the default cap on the total number of image layers
+// (base layers + dependency layers + the app source layer). 127 is the classic
+// practical ceiling for container images.
+const DefaultMaxLayers = 127
 
 // Options configures an image build.
 type Options struct {
@@ -52,8 +62,14 @@ type Options struct {
 	Wheels []wheelhouse.ResolvedWheel
 	// Layout describes where wheels are installed in the image.
 	Layout wheel.Layout
-	// Strategy selects the dependency layering strategy.
+	// Strategy selects the dependency layering strategy (default Auto).
 	Strategy LayerStrategy
+	// MaxLayers caps the total image layer count (base + deps + app) for the
+	// Auto strategy. <= 0 means DefaultMaxLayers (127).
+	MaxLayers int
+	// MaxWheelLayers, when > 0, caps the number of dependency layers directly
+	// for the Auto strategy, taking precedence over MaxLayers.
+	MaxWheelLayers int
 
 	// SourceDir is the application source directory (optional).
 	SourceDir string
@@ -100,10 +116,15 @@ func Build(opts Options) (v1.Image, error) {
 		opts.WorkingDir = "/app"
 	}
 	if opts.Strategy == "" {
-		opts.Strategy = PerWheel
+		opts.Strategy = Auto
 	}
 
-	adds, err := dependencyAddendums(opts)
+	baseLayers, err := imageLayerCount(opts.Base)
+	if err != nil {
+		return nil, fmt.Errorf("build: count base layers: %w", err)
+	}
+
+	adds, err := dependencyAddendums(opts, baseLayers)
 	if err != nil {
 		return nil, err
 	}
@@ -129,52 +150,117 @@ func Build(opts Options) (v1.Image, error) {
 	return applyConfig(img, opts)
 }
 
-// dependencyAddendums builds the per-strategy dependency layer addendums.
-func dependencyAddendums(opts Options) ([]mutate.Addendum, error) {
+// dependencyAddendums packs the wheels into layers (respecting the budget) and
+// builds each group's layer.
+func dependencyAddendums(opts Options, baseLayers int) ([]mutate.Addendum, error) {
+	if len(opts.Wheels) == 0 {
+		return nil, nil
+	}
+	budget, err := wheelBudget(opts, baseLayers)
+	if err != nil {
+		return nil, err
+	}
+	groups := packWheels(opts.Wheels, budget)
+
+	layers, err := buildGroupLayers(groups, opts.Layout, opts.Cache)
+	if err != nil {
+		return nil, err
+	}
+	adds := make([]mutate.Addendum, len(groups))
+	for i, g := range groups {
+		adds[i] = mutate.Addendum{Layer: layers[i], History: history(groupDescription(g))}
+	}
+	return adds, nil
+}
+
+// wheelBudget returns the maximum number of dependency layers for the build.
+func wheelBudget(opts Options, baseLayers int) (int, error) {
 	switch opts.Strategy {
-	case SingleDepsLayer:
-		var all []ptar.File
-		for _, rw := range opts.Wheels {
-			files, err := wheelFiles(rw, opts.Layout)
-			if err != nil {
-				return nil, err
-			}
-			all = append(all, files...)
-		}
-		if len(all) == 0 {
-			return nil, nil
-		}
-		layer, err := ptar.Layer(all)
-		if err != nil {
-			return nil, err
-		}
-		return []mutate.Addendum{{Layer: layer, History: history("python dependencies")}}, nil
-
 	case PerWheel:
-		layers, err := perWheelLayers(opts)
-		if err != nil {
-			return nil, err
+		return len(opts.Wheels), nil // one per wheel, no cap
+	case SingleDepsLayer:
+		return 1, nil
+	case Auto, "":
+		if opts.MaxWheelLayers > 0 {
+			return opts.MaxWheelLayers, nil
 		}
-		adds := make([]mutate.Addendum, len(opts.Wheels))
-		for i, rw := range opts.Wheels {
-			adds[i] = mutate.Addendum{
-				Layer:   layers[i],
-				History: history(fmt.Sprintf("wheel %s==%s", rw.Name, rw.Version)),
-			}
+		total := opts.MaxLayers
+		if total <= 0 {
+			total = DefaultMaxLayers
 		}
-		return adds, nil
-
+		reserved := baseLayers
+		if opts.SourceDir != "" {
+			reserved++ // the app source layer also counts toward the total
+		}
+		budget := total - reserved
+		if budget < 1 {
+			// The base alone already meets/exceeds the cap; we can't shrink it,
+			// so collapse all wheels into a single layer.
+			budget = 1
+		}
+		return budget, nil
 	default:
-		return nil, fmt.Errorf("build: unknown layer strategy %q", opts.Strategy)
+		return 0, fmt.Errorf("build: unknown layer strategy %q", opts.Strategy)
 	}
 }
 
-// perWheelLayers builds one layer per wheel concurrently (bounded by CPU
-// count), preserving input order. Layer construction is independent and
-// CPU-bound (read + gzip), so parallelism is a straightforward win.
-func perWheelLayers(opts Options) ([]v1.Layer, error) {
-	layers := make([]v1.Layer, len(opts.Wheels))
-	errs := make([]error, len(opts.Wheels))
+// packWheels groups wheels into at most budget layers. While the wheels fit the
+// budget each gets its own layer; otherwise wheels are assigned to buckets by a
+// stable hash of their (normalized) distribution name. Because the bucket of a
+// wheel depends only on its name, adding, removing, or version-bumping a single
+// dependency changes only the one bucket that holds it — every other layer
+// keeps its digest and is reused.
+func packWheels(wheels []wheelhouse.ResolvedWheel, budget int) [][]wheelhouse.ResolvedWheel {
+	if budget < 1 {
+		budget = 1
+	}
+	if len(wheels) <= budget {
+		groups := make([][]wheelhouse.ResolvedWheel, len(wheels))
+		for i, w := range wheels {
+			groups[i] = []wheelhouse.ResolvedWheel{w}
+		}
+		return groups
+	}
+
+	buckets := make([][]wheelhouse.ResolvedWheel, budget)
+	for _, w := range wheels {
+		b := bucketIndex(w.Name, budget)
+		buckets[b] = append(buckets[b], w)
+	}
+	groups := make([][]wheelhouse.ResolvedWheel, 0, budget)
+	for _, b := range buckets {
+		if len(b) == 0 {
+			continue
+		}
+		sortWheels(b)
+		groups = append(groups, b)
+	}
+	return groups
+}
+
+// bucketIndex maps a distribution name to a stable bucket in [0, k). It uses
+// FNV-1a (a fixed, version-stable algorithm) over the PEP 503 normalized name.
+func bucketIndex(name string, k int) int {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(lock.NormalizeName(name)))
+	return int(h.Sum64() % uint64(k))
+}
+
+func sortWheels(ws []wheelhouse.ResolvedWheel) {
+	sort.Slice(ws, func(i, j int) bool {
+		ni, nj := lock.NormalizeName(ws[i].Name), lock.NormalizeName(ws[j].Name)
+		if ni != nj {
+			return ni < nj
+		}
+		return ws[i].Version < ws[j].Version
+	})
+}
+
+// buildGroupLayers builds each group's layer concurrently (bounded by CPU
+// count), preserving group order.
+func buildGroupLayers(groups [][]wheelhouse.ResolvedWheel, layout wheel.Layout, c *cache.Cache) ([]v1.Layer, error) {
+	layers := make([]v1.Layer, len(groups))
+	errs := make([]error, len(groups))
 
 	workers := runtime.NumCPU()
 	if workers < 1 {
@@ -182,13 +268,13 @@ func perWheelLayers(opts Options) ([]v1.Layer, error) {
 	}
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
-	for i := range opts.Wheels {
+	for i := range groups {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			layers[i], errs[i] = buildWheelLayer(opts.Wheels[i], opts.Layout, opts.Cache)
+			layers[i], errs[i] = buildGroupLayer(groups[i], layout, c)
 		}(i)
 	}
 	wg.Wait()
@@ -201,19 +287,24 @@ func perWheelLayers(opts Options) ([]v1.Layer, error) {
 	return layers, nil
 }
 
-// buildWheelLayer returns the layer for a wheel, using the cache when present.
-func buildWheelLayer(rw wheelhouse.ResolvedWheel, layout wheel.Layout, c *cache.Cache) (v1.Layer, error) {
-	key := wheelCacheKey(rw, layout)
+// buildGroupLayer returns the layer for a group of wheels, using the cache when
+// present.
+func buildGroupLayer(group []wheelhouse.ResolvedWheel, layout wheel.Layout, c *cache.Cache) (v1.Layer, error) {
+	key := groupCacheKey(group, layout)
 	if c != nil {
 		if l, ok := c.Get(key); ok {
 			return l, nil
 		}
 	}
-	files, err := wheelFiles(rw, layout)
-	if err != nil {
-		return nil, err
+	var all []ptar.File
+	for _, w := range group {
+		files, err := wheelFiles(w, layout)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, files...)
 	}
-	layer, err := ptar.Layer(files)
+	layer, err := ptar.Layer(all)
 	if err != nil {
 		return nil, err
 	}
@@ -225,10 +316,37 @@ func buildWheelLayer(rw wheelhouse.ResolvedWheel, layout wheel.Layout, c *cache.
 	return layer, nil
 }
 
-func wheelCacheKey(rw wheelhouse.ResolvedWheel, layout wheel.Layout) string {
+// groupCacheKey is content-addressed by the (sorted) member wheel hashes and
+// the install layout, so an identical group reuses its compressed blob.
+func groupCacheKey(group []wheelhouse.ResolvedWheel, layout wheel.Layout) string {
+	shas := make([]string, len(group))
+	for i, w := range group {
+		shas[i] = w.SHA256
+	}
+	sort.Strings(shas)
 	return strings.Join([]string{
-		"wheel", layerFormatVersion, rw.SHA256, layout.Prefix, layout.PythonTag,
+		"wheels", layerFormatVersion, layout.Prefix, layout.PythonTag, strings.Join(shas, ","),
 	}, "|")
+}
+
+func groupDescription(group []wheelhouse.ResolvedWheel) string {
+	if len(group) == 1 {
+		return fmt.Sprintf("wheel %s==%s", group[0].Name, group[0].Version)
+	}
+	names := make([]string, len(group))
+	for i, w := range group {
+		names[i] = w.Name + "==" + w.Version
+	}
+	return fmt.Sprintf("%d wheels: %s", len(group), strings.Join(names, ", "))
+}
+
+// imageLayerCount returns the number of layers in img (no blob download).
+func imageLayerCount(img v1.Image) (int, error) {
+	ls, err := img.Layers()
+	if err != nil {
+		return 0, err
+	}
+	return len(ls), nil
 }
 
 func wheelFiles(rw wheelhouse.ResolvedWheel, layout wheel.Layout) ([]ptar.File, error) {
