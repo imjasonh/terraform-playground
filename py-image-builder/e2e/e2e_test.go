@@ -307,7 +307,7 @@ func pythonTag(t *testing.T, py string) string {
 func extract(t *testing.T, img v1.Image, dest string) {
 	t.Helper()
 	rc := mutate.Extract(img)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	tr := tar.NewReader(rc)
 	for {
 		h, err := tr.Next()
@@ -332,10 +332,10 @@ func extract(t *testing.T, img v1.Image, dest string) {
 				t.Fatal(err)
 			}
 			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
+				_ = f.Close()
 				t.Fatal(err)
 			}
-			f.Close()
+			_ = f.Close()
 		}
 	}
 }

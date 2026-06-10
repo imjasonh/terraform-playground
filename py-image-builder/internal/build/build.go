@@ -161,7 +161,7 @@ func wheelFiles(rw wheelhouse.ResolvedWheel, layout wheel.Layout) ([]ptar.File, 
 	if err != nil {
 		return nil, err
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	return w.Files(layout)
 }
 

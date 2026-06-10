@@ -43,7 +43,7 @@ func TestFilesLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	if w.Name != "examplepkg" || w.Version != "1.2.3" {
 		t.Fatalf("parsed name/version = %q %q", w.Name, w.Version)
@@ -92,7 +92,7 @@ func TestFilesDeterministic(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer w.Close()
+		defer func() { _ = w.Close() }()
 		files, err := w.Files(layout)
 		if err != nil {
 			t.Fatal(err)
@@ -107,7 +107,8 @@ func TestFilesDeterministic(t *testing.T) {
 		}
 		return d.String()
 	}
-	if digest() != digest() {
-		t.Fatal("wheel layer digest is not deterministic")
+	d1, d2 := digest(), digest()
+	if d1 != d2 {
+		t.Fatalf("wheel layer digest is not deterministic: %s != %s", d1, d2)
 	}
 }

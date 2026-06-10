@@ -88,7 +88,7 @@ func Open(filename string) (*Wheel, error) {
 		}
 	}
 	if w.distInfo == "" {
-		z.Close()
+		_ = z.Close()
 		return nil, fmt.Errorf("wheel: %q has no .dist-info directory", filename)
 	}
 	base := strings.TrimSuffix(w.distInfo, ".dist-info")
@@ -250,7 +250,7 @@ func readZip(f *zip.File) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	return io.ReadAll(rc)
 }
 

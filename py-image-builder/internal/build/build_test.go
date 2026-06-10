@@ -22,7 +22,7 @@ func layerPaths(t *testing.T, l v1.Layer) map[string]bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	names := map[string]bool{}
 	tr := tar.NewReader(rc)
 	for {
@@ -140,7 +140,7 @@ func TestConfigAndLayerCount(t *testing.T) {
 	if c.Labels["org.test"] != "yes" {
 		t.Errorf("label not set: %v", c.Labels)
 	}
-	if !cf.Created.Time.Equal(epoch()) {
+	if !cf.Created.Equal(epoch()) {
 		t.Errorf("config Created = %v, want epoch", cf.Created)
 	}
 }
