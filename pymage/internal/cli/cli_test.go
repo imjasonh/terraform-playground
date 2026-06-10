@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http/httptest"
@@ -279,6 +280,88 @@ func TestPushRequiresRepo(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "repo") {
 		t.Fatalf("expected missing-repo error, got %v", err)
+	}
+}
+
+// TestBuildStdoutIsImageRef checks the contract that `pymage build` prints
+// exactly the pullable by-digest reference to stdout (so `docker run
+// "$(pymage build)"` works), while progress/diagnostics — including per-blob
+// push/skip logs and per-tag lines — go to stderr.
+func TestBuildStdoutIsImageRef(t *testing.T) {
+	ctx := context.Background()
+	s := httptest.NewServer(registry.New())
+	t.Cleanup(s.Close)
+	host := strings.TrimPrefix(s.URL, "http://")
+
+	baseRef := host + "/base:latest"
+	base, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{
+		OS: "linux", Architecture: "amd64",
+		Config: v1.Config{Env: []string{"PYTHON_VERSION=3.12.7", "PATH=/usr/bin"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	br, _ := name.ParseReference(baseRef)
+	if err := remote.Write(br, base, remote.WithContext(ctx)); err != nil {
+		t.Fatal(err)
+	}
+
+	wh := t.TempDir()
+	_, sha := testwheel.Write(t, wh, testwheel.Spec{Name: "alpha", Version: "1.0", Modules: map[string]string{"alpha/__init__.py": "V='1'\n"}})
+	reqFile := filepath.Join(t.TempDir(), "requirements.txt")
+	if err := os.WriteFile(reqFile, []byte(fmt.Sprintf("alpha==1.0 --hash=sha256:%s\n", sha)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "app.py"), []byte("print('hi')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := Root()
+	cmd.SetArgs([]string{
+		"build", src,
+		"--base", baseRef,
+		"--lock", reqFile,
+		"--find-links", wh,
+		"--entrypoint", "python", "--entrypoint", "/app/app.py",
+		"--repo", host + "/app",
+		"-t", "v1", "-t", "v2",
+	})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("build failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+
+	out := strings.TrimRight(stdout.String(), "\n")
+	if strings.Contains(out, "\n") {
+		t.Fatalf("stdout must be a single line, got:\n%q", out)
+	}
+	if !strings.HasPrefix(out, host+"/app@sha256:") {
+		t.Fatalf("stdout = %q, want %q@sha256:...", out, host+"/app")
+	}
+
+	// The printed ref must be pullable and its digest must match the image.
+	ref, err := name.ParseReference(out)
+	if err != nil {
+		t.Fatalf("parse stdout ref %q: %v", out, err)
+	}
+	img, err := remote.Image(ref, remote.WithContext(ctx))
+	if err != nil {
+		t.Fatalf("pull %q: %v", out, err)
+	}
+	d, _ := img.Digest()
+	if !strings.HasSuffix(out, d.String()) {
+		t.Errorf("stdout ref %q does not end with image digest %s", out, d)
+	}
+
+	// stderr should carry the per-tag pointers and ggcr's per-blob progress.
+	se := stderr.String()
+	for _, want := range []string{"tagged", "v1", "v2", "blob"} {
+		if !strings.Contains(se, want) {
+			t.Errorf("stderr missing %q; got:\n%s", want, se)
+		}
 	}
 }
 

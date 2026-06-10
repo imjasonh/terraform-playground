@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
@@ -109,6 +110,12 @@ func buildCmd() *cobra.Command {
 
 func runBuild(cmd *cobra.Command, f *buildFlags) error {
 	ctx := cmd.Context()
+	// Keep stdout clean (only the final image ref): route go-containerregistry's
+	// per-blob progress ("existing blob", "mounted blob", "pushed blob") and
+	// warnings to stderr.
+	logs.Progress.SetOutput(cmd.ErrOrStderr())
+	logs.Warn.SetOutput(cmd.ErrOrStderr())
+
 	if err := applyDefaults(cmd, f); err != nil {
 		return err
 	}
@@ -197,9 +204,9 @@ func runBuild(cmd *cobra.Command, f *buildFlags) error {
 
 	if len(platforms) > 1 {
 		idx := mutate.AppendManifests(empty.Index, adds...)
-		return output(ctx, f, nameOpts, nil, idx)
+		return output(cmd, f, nameOpts, nil, idx)
 	}
-	return output(ctx, f, nameOpts, images[0], nil)
+	return output(cmd, f, nameOpts, images[0], nil)
 }
 
 // buildOne resolves the base and wheels for a single platform and builds the
@@ -272,74 +279,90 @@ func resolveInterpreter(f *buildFlags, base v1.Image) (major, minor int, pyTag s
 
 // output writes/pushes either a single image or a multi-arch index (exactly one
 // of img/idx is non-nil).
-func output(ctx context.Context, f *buildFlags, nameOpts []name.Option, img v1.Image, idx v1.ImageIndex) error {
-	var (
-		digest v1.Hash
-		err    error
-	)
-	if idx != nil {
-		digest, err = idx.Digest()
-	} else {
-		digest, err = img.Digest()
-	}
+//
+// stdout carries exactly one line — the resulting image reference — so callers
+// can run `docker run "$(pymage build)"`. All progress/diagnostic output goes
+// to stderr.
+func output(cmd *cobra.Command, f *buildFlags, nameOpts []name.Option, img v1.Image, idx v1.ImageIndex) error {
+	ctx := cmd.Context()
+	stdout := cmd.OutOrStdout()
+	stderr := cmd.ErrOrStderr()
+
+	digest, err := artifactDigest(img, idx)
 	if err != nil {
 		return err
 	}
 
 	if f.ociLayout != "" {
-		p, err := layout.Write(f.ociLayout, empty.Index)
-		if err != nil {
+		if err := writeLayout(f.ociLayout, img, idx); err != nil {
 			return err
 		}
-		if idx != nil {
-			err = p.AppendIndex(idx)
-		} else {
-			err = p.AppendImage(img)
-		}
-		if err != nil {
-			return err
-		}
+		_, _ = fmt.Fprintf(stderr, "wrote OCI layout to %s\n", f.ociLayout)
 	}
 
 	if f.printDigest {
-		fmt.Println(digest.String())
+		_, _ = fmt.Fprintln(stdout, digest.String())
 		return nil
 	}
 
-	if f.push {
-		if f.repo == "" {
-			return fmt.Errorf("no repo configured: set repo in [tool.pymage] or pass --repo (or use --push=false)")
-		}
-		tags := f.tags
-		if len(tags) == 0 {
-			tags = []string{"latest"}
-		}
-		opts := []remote.Option{
-			remote.WithContext(ctx),
-			remote.WithAuthFromKeychain(authn.DefaultKeychain),
-		}
-		// The image/index is pushed by content; each tag is just another
-		// pointer to the same digest.
-		for _, t := range tags {
-			ref, err := name.NewTag(f.repo+":"+t, nameOpts...)
-			if err != nil {
-				return err
-			}
-			if idx != nil {
-				err = remote.WriteIndex(ref, idx, opts...)
-			} else {
-				err = remote.Write(ref, img, opts...)
-			}
-			if err != nil {
-				return fmt.Errorf("push %s: %w", ref, err)
-			}
-			fmt.Printf("pushed %s@%s (tag %s)\n", ref.Context().Name(), digest, t)
-		}
+	if !f.push {
+		_, _ = fmt.Fprintln(stdout, digest.String())
 		return nil
 	}
 
-	fmt.Println(digest.String())
+	if f.repo == "" {
+		return fmt.Errorf("no repo configured: set repo in [tool.pymage] or pass --repo (or use --push=false)")
+	}
+	repo, err := name.NewRepository(f.repo, nameOpts...)
+	if err != nil {
+		return err
+	}
+	tags := f.tags
+	if len(tags) == 0 {
+		tags = []string{"latest"}
+	}
+	opts := []remote.Option{
+		remote.WithContext(ctx),
+		remote.WithAuthFromKeychain(authn.DefaultKeychain),
+	}
+	// The artifact is pushed by content; each tag is just another pointer to
+	// the same digest.
+	for _, t := range tags {
+		ref := repo.Tag(t)
+		if err := writeArtifact(ref, img, idx, opts...); err != nil {
+			return fmt.Errorf("push %s: %w", ref, err)
+		}
+		_, _ = fmt.Fprintf(stderr, "tagged %s -> %s@%s\n", ref, repo.Name(), digest)
+	}
+
+	// The sole stdout line: the immutable by-digest reference.
+	_, _ = fmt.Fprintf(stdout, "%s@%s\n", repo.Name(), digest)
 	return nil
+}
+
+func artifactDigest(img v1.Image, idx v1.ImageIndex) (v1.Hash, error) {
+	if idx != nil {
+		return idx.Digest()
+	}
+	return img.Digest()
+}
+
+func writeArtifact(ref name.Reference, img v1.Image, idx v1.ImageIndex, opts ...remote.Option) error {
+	if idx != nil {
+		return remote.WriteIndex(ref, idx, opts...)
+	}
+	return remote.Write(ref, img, opts...)
+}
+
+func writeLayout(dir string, img v1.Image, idx v1.ImageIndex) error {
+	p, err := layout.Write(dir, empty.Index)
+	if err != nil {
+		return err
+	}
+	if idx != nil {
+		return p.AppendIndex(idx)
+	}
+	return p.AppendImage(img)
 }
 
 // parsePlatforms parses the (comma-split, repeatable) --platform values.

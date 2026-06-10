@@ -14,10 +14,10 @@ type uvLockFile struct {
 }
 
 type uvPackage struct {
-	Name   string        `toml:"name"`
-	Version string       `toml:"version"`
-	Source map[string]any `toml:"source"`
-	Wheels []uvArtifact  `toml:"wheels"`
+	Name    string         `toml:"name"`
+	Version string         `toml:"version"`
+	Source  map[string]any `toml:"source"`
+	Wheels  []uvArtifact   `toml:"wheels"`
 }
 
 type uvArtifact struct {

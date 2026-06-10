@@ -44,7 +44,15 @@ pymage build ./example    # build a different project directory (positional arg)
 The project directory is the first positional argument (default: the current
 directory).
 
-`pymage` always publishes **by digest** and prints the resulting `repo@sha256:…`.
+`pymage` always publishes **by digest** and prints the resulting `repo@sha256:…`
+as the **only** thing on stdout — progress (per-blob `pushed`/`existing`/`mounted`
+logs, per-tag pointers, diagnostics) goes to stderr — so you can run the image
+directly:
+
+```
+docker run "$(pymage build)"
+```
+
 `-t/--tag` is the **tag component only**, never a full reference — the repo comes
 from `[tool.pymage] repo` (or `--repo`). If no `-t` is given it uses
 `[tool.pymage] tags`, defaulting to `latest`.

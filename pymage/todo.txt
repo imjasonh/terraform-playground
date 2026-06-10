@@ -1,2 +1,0 @@
-- the only stdout should be just the full digest ref of the image, so folks can "docker run $(pymage build)"
-- log layers+blobs as they're pushed, or skipped
