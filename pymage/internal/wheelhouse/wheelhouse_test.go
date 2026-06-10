@@ -3,8 +3,8 @@ package wheelhouse
 import (
 	"testing"
 
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/lock"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/testwheel"
+	"github.com/imjasonh/terraform-playground/pymage/internal/lock"
+	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
 )
 
 func TestResolveSortedAndVerified(t *testing.T) {

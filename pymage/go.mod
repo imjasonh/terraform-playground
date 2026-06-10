@@ -1,4 +1,4 @@
-module github.com/imjasonh/terraform-playground/py-image-builder
+module github.com/imjasonh/terraform-playground/pymage
 
 go 1.22.2
 

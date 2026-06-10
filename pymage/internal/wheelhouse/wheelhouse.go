@@ -17,8 +17,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/lock"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/wheel"
+	"github.com/imjasonh/terraform-playground/pymage/internal/lock"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
 )
 
 // ResolvedWheel pairs a pinned requirement with the wheel file that satisfies

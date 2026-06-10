@@ -20,9 +20,9 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/ptar"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/wheel"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/wheelhouse"
+	"github.com/imjasonh/terraform-playground/pymage/internal/ptar"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
 )
 
 // LayerStrategy controls how dependency layers are partitioned.
@@ -362,7 +362,7 @@ func mergeEnv(base []string, layout wheel.Layout, extra []string) []string {
 func history(createdBy string) v1.History {
 	return v1.History{
 		Created:   v1.Time{Time: epoch()},
-		CreatedBy: "py-image-builder: " + createdBy,
+		CreatedBy: "pymage: " + createdBy,
 	}
 }
 

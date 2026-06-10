@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/wheelhouse"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
 )
 
 func TestGenerateDeterministicAndSorted(t *testing.T) {

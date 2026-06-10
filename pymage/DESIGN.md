@@ -1,4 +1,4 @@
-# `py-image-builder` — a docker-less, layer-aware Python image builder
+# `pymage` — a docker-less, layer-aware Python image builder
 
 > Status: **Design / plan** (no code yet). This document proposes the architecture
 > and an incremental implementation plan. Comments and pushback welcome.
@@ -226,7 +226,7 @@ pure-python layers), and publish an **image index** referencing each arch manife
 - **A single CLI**, like `ko` — no daemon, no server, no infra. It builds and
   pushes (or saves) an image in one command:
   ```
-  py-image-builder build \
+  pymage build \
     --base cgr.dev/chainguard/python@sha256:... \
     --lock requirements.txt \
     --source ./ \
@@ -238,7 +238,7 @@ pure-python layers), and publish an **image index** referencing each arch manife
   `--push=false` (build to local OCI layout / `--tarball`), `--print-digest`
   (compute the would-be digest offline, no push), and standard ggcr keychain
   auth (Docker config / cloud helpers) so it works in CI without extra setup.
-- New self-contained module dir `py-image-builder/` with its own `go.mod` and
+- New self-contained module dir `pymage/` with its own `go.mod` and
   `README.md`, mirroring repo conventions. **No `main.tf` / Cloud Run** — this is
   a standalone CLI, not a hosted service.
 
@@ -246,7 +246,7 @@ pure-python layers), and publish an **image index** referencing each arch manife
 
 Each phase is independently useful and reviewable.
 
-1. **Skeleton + deterministic tar.** New `py-image-builder/` Go module; a function
+1. **Skeleton + deterministic tar.** New `pymage/` Go module; a function
    that writes a normalized, reproducible tar and a round-trip determinism test
    (same input ⇒ same bytes ⇒ same digest).
 2. **Wheel → layer.** Parse a wheel zip, lay out files into the fixed prefix,

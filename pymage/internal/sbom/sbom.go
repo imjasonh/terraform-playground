@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"sort"
 
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/wheelhouse"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
 )
 
 type doc struct {

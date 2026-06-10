@@ -1,10 +1,10 @@
-name: py-image-builder
+name: pymage
 
 on:
   pull_request:
     paths:
-      - "py-image-builder/**"
-      - ".github/workflows/py-image-builder.yaml"
+      - "pymage/**"
+      - ".github/workflows/pymage.yaml"
 
 jobs:
   ci:
@@ -26,29 +26,29 @@ jobs:
 
       - uses: actions/setup-go@v6.2.0
         with:
-          go-version-file: py-image-builder/go.mod
-          cache-dependency-path: py-image-builder/go.sum
+          go-version-file: pymage/go.mod
+          cache-dependency-path: pymage/go.sum
 
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.12"
 
       - name: Run tests
-        working-directory: py-image-builder
+        working-directory: pymage
         run: go test -race ./...
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9.2.0
         with:
-          working-directory: py-image-builder
+          working-directory: pymage
           version: latest
 
       - name: Build the CLI
-        working-directory: py-image-builder
-        run: go build -o pib .
+        working-directory: pymage
+        run: go build -o pymage .
 
       - name: Prepare a demo app, wheelhouse, and hashed lock
-        working-directory: py-image-builder
+        working-directory: pymage
         run: |
           set -euo pipefail
           mkdir -p demo/wheelhouse demo/src
@@ -57,7 +57,7 @@ jobs:
           import click
           import six
 
-          print("py-image-builder demo OK | six=%s click=%s" % (six.__version__, click.__version__))
+          print("pymage demo OK | six=%s click=%s" % (six.__version__, click.__version__))
           PY
 
           python -m pip install --upgrade pip
@@ -75,10 +75,10 @@ jobs:
           cat demo/requirements.txt
 
       - name: Build and push the image (no Docker daemon involved)
-        working-directory: py-image-builder
+        working-directory: pymage
         run: |
           set -euo pipefail
-          ./pib build \
+          ./pymage build \
             --base "$BASE" \
             --lock demo/requirements.txt \
             --find-links demo/wheelhouse \
@@ -92,14 +92,14 @@ jobs:
           cat demo/sbom.json
 
       - name: Verify the build is reproducible (same digest twice)
-        working-directory: py-image-builder
+        working-directory: pymage
         run: |
           set -euo pipefail
           common=(--base "$BASE" --lock demo/requirements.txt --find-links demo/wheelhouse \
                   --source demo/src --python "$PYTHON" \
                   --entrypoint python --entrypoint /app/app.py --insecure --push=false)
-          d1=$(./pib build "${common[@]}" --print-digest)
-          d2=$(./pib build "${common[@]}" --print-digest)
+          d1=$(./pymage build "${common[@]}" --print-digest)
+          d2=$(./pymage build "${common[@]}" --print-digest)
           echo "digest #1: $d1"
           echo "digest #2: $d2"
           if [ "$d1" != "$d2" ]; then
@@ -114,13 +114,13 @@ jobs:
           docker pull "$REGISTRY/demo:v1"
           out=$(docker run --rm "$REGISTRY/demo:v1")
           echo "container output: $out"
-          echo "$out" | grep -q "py-image-builder demo OK"
+          echo "$out" | grep -q "pymage demo OK"
 
       - name: Install crane (for manifest inspection)
         run: go install github.com/google/go-containerregistry/cmd/crane@v0.19.2
 
       - name: Adding a dependency reuses existing layers (only one new layer)
-        working-directory: py-image-builder
+        working-directory: pymage
         run: |
           set -euo pipefail
           # Resolve one more pure-python wheel and append it to the lock.
@@ -129,7 +129,7 @@ jobs:
           echo "idna==3.7 --hash=sha256:$(sha256sum "$idna_whl" | awk '{print $1}')" >> demo/requirements.txt
 
           # Build the new image (now with the extra dependency) and push it.
-          ./pib build \
+          ./pymage build \
             --base "$BASE" \
             --lock demo/requirements.txt \
             --find-links demo/wheelhouse \
@@ -143,7 +143,7 @@ jobs:
           docker pull "$REGISTRY/demo:v2"
           out=$(docker run --rm "$REGISTRY/demo:v2")
           echo "container output: $out"
-          echo "$out" | grep -q "py-image-builder demo OK"
+          echo "$out" | grep -q "pymage demo OK"
 
           # Compare layer sets: every layer from v1 must still be present in v2
           # (unchanged digests), and v2 must have exactly one more layer.

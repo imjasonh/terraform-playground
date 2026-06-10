@@ -1,4 +1,4 @@
-// Command py-image-builder builds and pushes OCI images for Python applications
+// Command pymage builds and pushes OCI images for Python applications
 // without a Docker daemon, in the spirit of ko.
 //
 // It installs each resolved wheel into its own deterministic, content-addressed
@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/cli"
+	"github.com/imjasonh/terraform-playground/pymage/internal/cli"
 )
 
 func main() {

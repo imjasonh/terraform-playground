@@ -11,9 +11,9 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/testwheel"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/wheel"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/wheelhouse"
+	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
 )
 
 func layerPaths(t *testing.T, l v1.Layer) map[string]bool {

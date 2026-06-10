@@ -1,4 +1,4 @@
-# `py-image-builder`
+# `pymage`
 
 A **docker-less**, layer-aware container image builder for Python applications,
 in the spirit of [`ko`](https://github.com/ko-build/ko). It builds and pushes
@@ -23,7 +23,7 @@ See [`DESIGN.md`](./DESIGN.md) for the full rationale.
 ## Usage
 
 ```
-py-image-builder build \
+pymage build \
   --base cgr.dev/chainguard/python:latest \
   --lock requirements.txt \      # pinned + hashed (pip-compile / uv pip compile --generate-hashes)
   --find-links ./wheelhouse \    # directory of resolved .whl files

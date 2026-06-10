@@ -14,7 +14,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/testwheel"
+	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
 )
 
 // TestBuildCommandEndToEnd drives the cobra `build` command exactly as a user

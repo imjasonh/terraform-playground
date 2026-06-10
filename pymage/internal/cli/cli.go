@@ -1,4 +1,4 @@
-// Package cli implements the py-image-builder command line.
+// Package cli implements the pymage command line.
 package cli
 
 import (
@@ -15,17 +15,17 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/spf13/cobra"
 
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/build"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/lock"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/sbom"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/wheel"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/wheelhouse"
+	"github.com/imjasonh/terraform-playground/pymage/internal/build"
+	"github.com/imjasonh/terraform-playground/pymage/internal/lock"
+	"github.com/imjasonh/terraform-playground/pymage/internal/sbom"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
 )
 
 // Root returns the root cobra command.
 func Root() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "py-image-builder",
+		Use:           "pymage",
 		Short:         "Docker-less, layer-aware Python container image builder",
 		SilenceUsage:  true,
 		SilenceErrors: true,

@@ -1,7 +1,7 @@
 // Package ptar builds deterministic (reproducible) tar archives and turns them
 // into OCI layers.
 //
-// Reproducibility is the load-bearing property of py-image-builder: identical
+// Reproducibility is the load-bearing property of pymage: identical
 // inputs must yield byte-identical layers so that their content-addressed
 // digests match and registries can dedupe/skip/mount them. To guarantee that,
 // every tar we emit:

@@ -1,4 +1,4 @@
-// Package e2e exercises py-image-builder end to end against a real local OCI
+// Package e2e exercises pymage end to end against a real local OCI
 // registry (go-containerregistry's in-process registry served over HTTP — a
 // genuine registry daemon, just in the test process). No Docker is required.
 //
@@ -30,10 +30,10 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/build"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/testwheel"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/wheel"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/wheelhouse"
+	"github.com/imjasonh/terraform-playground/pymage/internal/build"
+	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
 )
 
 // uploadCounter records the set of blob digests that were actually uploaded

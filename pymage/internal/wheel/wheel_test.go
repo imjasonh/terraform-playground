@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/ptar"
-	"github.com/imjasonh/terraform-playground/py-image-builder/internal/testwheel"
+	"github.com/imjasonh/terraform-playground/pymage/internal/ptar"
+	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
 )
 
 var layout = Layout{Prefix: "/app/.venv", PythonTag: "python3.12"}
