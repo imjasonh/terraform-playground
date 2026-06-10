@@ -28,11 +28,17 @@ type Requirement struct {
 }
 
 var (
-	// pinRE matches "name==version" optionally followed by extras/markers we
-	// ignore for matching purposes.
-	pinRE  = regexp.MustCompile(`^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([^\s;]+)`)
+	// pinRE matches "name[extras]==version". Extras are accepted (and ignored
+	// for matching, since a resolved lock pins their dependencies separately);
+	// environment markers after ";" are also ignored.
+	pinRE  = regexp.MustCompile(`^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*==\s*([^\s;]+)`)
 	hashRE = regexp.MustCompile(`--hash=sha256:([0-9a-fA-F]{64})`)
 	normRE = regexp.MustCompile(`[-_.]+`)
+
+	// dependencyOptions reference further requirements rather than configuring
+	// the resolver. Silently skipping them could omit dependencies, so we
+	// reject them: a lock fed to pymage must be fully inlined and pinned.
+	dependencyOptions = []string{"-e", "--editable", "-r", "--requirement", "-c", "--constraint"}
 )
 
 // NormalizeName implements PEP 503 name normalization.
@@ -66,9 +72,11 @@ func Parse(r io.Reader) ([]Requirement, error) {
 		if strings.TrimSpace(stripped) == "" {
 			return nil
 		}
-		// Skip pip options like -r/-c/--index-url that aren't pins.
+		// Configuration options (e.g. --index-url) aren't pins and are skipped,
+		// but options that pull in other requirements must not be silently
+		// ignored.
 		if isOption(stripped) {
-			return nil
+			return optionError(stripped)
 		}
 		m := pinRE.FindStringSubmatch(stripped)
 		if m == nil {
@@ -125,6 +133,18 @@ func stripComment(s string) string {
 func isOption(s string) bool {
 	t := strings.TrimSpace(s)
 	return strings.HasPrefix(t, "-")
+}
+
+// optionError returns an error for dependency-bearing options (which we cannot
+// honor from a local wheelhouse), and nil for benign configuration options.
+func optionError(s string) error {
+	t := strings.TrimSpace(s)
+	for _, opt := range dependencyOptions {
+		if t == opt || strings.HasPrefix(t, opt+" ") || strings.HasPrefix(t, opt+"=") {
+			return fmt.Errorf("lock: unsupported option %q; referenced requirements must be inlined and pinned", t)
+		}
+	}
+	return nil
 }
 
 // Validate ensures every requirement is pinned and (optionally) hashed.

@@ -65,10 +65,30 @@ func TestParseRejectsUnsupportedLines(t *testing.T) {
 		"requests>=2.0",                     // not pinned with ==
 		"mypkg @ https://example.com/x.whl", // direct URL reference
 		"justaname",                         // bare name
+		"-e ./local",                        // editable reference
+		"--editable=./local",                // editable reference
+		"-r other.txt",                      // nested requirements
+		"-c constraints.txt",                // nested constraints
 	} {
 		if _, err := Parse(strings.NewReader(in)); err == nil {
 			t.Errorf("expected error for unsupported line %q", in)
 		}
+	}
+}
+
+func TestParseAllowsExtrasAndBenignOptions(t *testing.T) {
+	in := `--index-url https://pypi.org/simple
+requests[socks,security]==2.31.0 --hash=sha256:` + strings.Repeat("a", 64) + `
+`
+	reqs, err := Parse(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 || reqs[0].Name != "requests" || reqs[0].Version != "2.31.0" {
+		t.Fatalf("got %+v", reqs)
+	}
+	if len(reqs[0].Hashes) != 1 {
+		t.Errorf("expected the hash to be parsed, got %v", reqs[0].Hashes)
 	}
 }
 
