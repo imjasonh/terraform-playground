@@ -112,7 +112,7 @@ func writeMultiArchBase(t *testing.T, ref string, arches []string) {
 		img, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{
 			OS:           "linux",
 			Architecture: arch,
-			Config:       v1.Config{Env: []string{"PATH=/usr/local/bin:/usr/bin:/bin"}},
+			Config:       v1.Config{Env: []string{"PYTHON_VERSION=3.12.7", "PATH=/usr/local/bin:/usr/bin:/bin"}},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -186,13 +186,51 @@ func TestParsePythonTag(t *testing.T) {
 	}
 }
 
-func TestResolveTargetDefaults(t *testing.T) {
-	tg, err := resolveTarget(nil, "python3.11")
-	if err != nil {
-		t.Fatal(err)
+func TestPlatformTargetDefaults(t *testing.T) {
+	if tg := platformTarget(nil); tg.OS != "linux" || tg.Arch != "amd64" {
+		t.Fatalf("unexpected default target %+v", tg)
 	}
-	if tg.OS != "linux" || tg.Arch != "amd64" || tg.PyMajor != 3 || tg.PyMinor != 11 {
-		t.Fatalf("unexpected target %+v", tg)
+	tg := platformTarget(&v1.Platform{OS: "linux", Architecture: "arm64"})
+	if tg.OS != "linux" || tg.Arch != "arm64" {
+		t.Fatalf("expected linux/arm64, got %+v", tg)
+	}
+}
+
+func TestResolveInterpreter(t *testing.T) {
+	withVersion := func(env []string) v1.Image {
+		img, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{Config: v1.Config{Env: env}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return img
+	}
+	base313 := withVersion([]string{"PYTHON_VERSION=3.13.1"})
+	bareBase := withVersion(nil)
+
+	// Auto-detect when --python is omitted.
+	maj, min, tag, err := resolveInterpreter(&buildFlags{}, base313)
+	if err != nil || maj != 3 || min != 13 || tag != "python3.13" {
+		t.Fatalf("auto-detect: %d.%d %q err=%v", maj, min, tag, err)
+	}
+
+	// Explicit --python that matches is accepted.
+	if _, _, tag, err := resolveInterpreter(&buildFlags{pythonTag: "python3.13"}, base313); err != nil || tag != "python3.13" {
+		t.Fatalf("matching --python: %q err=%v", tag, err)
+	}
+
+	// Explicit --python that mismatches the base is rejected.
+	if _, _, _, err := resolveInterpreter(&buildFlags{pythonTag: "python3.12"}, base313); err == nil {
+		t.Fatal("expected mismatch error")
+	}
+
+	// No --python and an undetectable base is an error.
+	if _, _, _, err := resolveInterpreter(&buildFlags{}, bareBase); err == nil {
+		t.Fatal("expected error when base version is unknown and --python is unset")
+	}
+
+	// Explicit --python works even when the base can't be validated.
+	if _, _, tag, err := resolveInterpreter(&buildFlags{pythonTag: "python3.10"}, bareBase); err != nil || tag != "python3.10" {
+		t.Fatalf("explicit on bare base: %q err=%v", tag, err)
 	}
 }
 
@@ -216,13 +254,21 @@ func TestBuildCommandEndToEnd(t *testing.T) {
 	t.Cleanup(s.Close)
 	host := strings.TrimPrefix(s.URL, "http://") // 127.0.0.1:port -> ggcr uses http
 
-	// Seed a base image.
+	// Seed a base image that advertises its Python version, so the build can
+	// auto-detect the interpreter (no --python flag below).
 	baseRef := host + "/base:latest"
+	base, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{
+		OS: "linux", Architecture: "amd64",
+		Config: v1.Config{Env: []string{"PYTHON_VERSION=3.12.7", "PATH=/usr/bin"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	br, err := name.ParseReference(baseRef)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := remote.Write(br, empty.Image, remote.WithContext(context.Background())); err != nil {
+	if err := remote.Write(br, base, remote.WithContext(context.Background())); err != nil {
 		t.Fatal(err)
 	}
 
@@ -279,6 +325,16 @@ func TestBuildCommandEndToEnd(t *testing.T) {
 	}
 	if len(layers) != 3 {
 		t.Fatalf("got %d layers, want 3", len(layers))
+	}
+
+	// The interpreter was auto-detected (3.12) from the base and used for the
+	// site-packages layout.
+	cf, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(cf.Config.Env, "\n"), "lib/python3.12/site-packages") {
+		t.Errorf("expected auto-detected python3.12 site-packages in env, got %v", cf.Config.Env)
 	}
 	pushedDigest, _ := img.Digest()
 

@@ -73,12 +73,14 @@ A floating tag such as `cgr.dev/chainguard/python:latest` works, but be aware:
   keep working (they're matched by `py3` and found via `PYTHONPATH`), but
   version-specific compiled wheels (`cp312`…) break when the interpreter moves.
 
-To prevent silent breakage, pymage detects the base's Python version and
-**fails the build** if it doesn't match `--python`, telling you which version to
-target. It looks at the `PYTHON_VERSION` env var (official python images) and,
-when that's absent, the `python-X.Y` package in `/etc/apko.json` from the top
-layer (Chainguard/Wolfi images). Bases that expose neither can't be validated —
-another reason to pin.
+pymage detects the base's Python version and uses it automatically, so
+`--python` is usually unnecessary. Detection looks at the `PYTHON_VERSION` env
+var (official python images) and, when that's absent, the `python-X.Y` package
+in `/etc/apko.json` from the top layer (Chainguard/Wolfi images). If you do pass
+`--python`, it **must match** the detected base version or the build fails fast
+(catching a floating tag that slid to a different Python). Bases that expose
+neither signal can't be auto-detected — pass `--python` explicitly, or pin a
+base that advertises its version.
 
 ### Useful flags
 
@@ -90,7 +92,7 @@ another reason to pin.
 | `--sbom PATH` | Write a CycloneDX SBOM of the resolved wheels. |
 | `--layer-strategy` | `per-wheel` (default) or `single-deps-layer`. |
 | `--platform` | Target platform(s); selects compatible wheels and base. Repeatable / comma-separated (e.g. `linux/amd64,linux/arm64`) builds a multi-arch image index. |
-| `--python` | Interpreter version / site-packages dir (default `python3.12`); also selects compatible wheels. |
+| `--python` | Interpreter version, e.g. `python3.12`. Optional — **auto-detected from the base** when omitted; if set, must match the base. Drives wheel selection and the site-packages layout. |
 | `--cache-dir` | Content-addressed layer cache; reuses compressed layers across rebuilds. |
 | `--prefix` | install prefix / venv root (default `/app/.venv`). |
 | `--workdir` | image working dir and source destination (default `/app`). |

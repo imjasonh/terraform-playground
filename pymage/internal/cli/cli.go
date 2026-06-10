@@ -80,7 +80,7 @@ func buildCmd() *cobra.Command {
 	fs.StringVar(&f.source, "source", "", "application source directory (optional)")
 	fs.StringVarP(&f.tag, "tag", "t", "", "image tag to push, e.g. registry/repo:tag")
 	fs.StringSliceVar(&f.platforms, "platform", nil, "target platform(s); repeatable or comma-separated, e.g. linux/amd64,linux/arm64 (multiple builds a multi-arch index)")
-	fs.StringVar(&f.pythonTag, "python", "python3.12", "python lib directory name for site-packages")
+	fs.StringVar(&f.pythonTag, "python", "", "interpreter version, e.g. python3.12 (default: auto-detected from the base image; if set, must match the base)")
 	fs.StringVar(&f.prefix, "prefix", "/app/.venv", "install prefix (venv-like root)")
 	fs.StringVar(&f.workingDir, "workdir", "/app", "image working directory and source destination")
 	fs.StringArrayVar(&f.entrypoint, "entrypoint", nil, "entrypoint argv (repeatable)")
@@ -196,30 +196,29 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 // buildOne resolves the base and wheels for a single platform and builds the
 // image, returning the resolved wheels for SBOM aggregation.
 func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platform *v1.Platform, labels map[string]string, layerCache *cache.Cache, nameOpts []name.Option) (v1.Image, []wheelhouse.ResolvedWheel, error) {
-	target, err := resolveTarget(platform, f.pythonTag)
-	if err != nil {
-		return nil, nil, err
-	}
-	wheels, err := wheelhouse.Resolve(reqs, f.findLinks, target)
-	if err != nil {
-		return nil, nil, err
-	}
 	base, err := resolveBase(ctx, f.base, platform, nameOpts...)
 	if err != nil {
 		return nil, nil, err
 	}
-	// If the base advertises its interpreter version, make sure it matches the
-	// requested --python. This catches a floating base tag (e.g. ":latest")
-	// sliding to a Python version that the selected wheels/layout don't target,
-	// which would otherwise silently produce a broken image.
-	if maj, min, ok := build.InterpreterVersion(base); ok && (maj != target.PyMajor || min != target.PyMinor) {
-		return nil, nil, fmt.Errorf("base %q provides Python %d.%d but --python is python%d.%d; pass --python python%d.%d (or pin a matching base)",
-			f.base, maj, min, target.PyMajor, target.PyMinor, maj, min)
+
+	// Determine the interpreter: honor --python (validated against the base) or
+	// auto-detect it from the base image.
+	major, minor, pyTag, err := resolveInterpreter(f, base)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	target := platformTarget(platform)
+	target.PyMajor, target.PyMinor = major, minor
+
+	wheels, err := wheelhouse.Resolve(reqs, f.findLinks, target)
+	if err != nil {
+		return nil, nil, err
 	}
 	img, err := build.Build(build.Options{
 		Base:       base,
 		Wheels:     wheels,
-		Layout:     wheel.Layout{Prefix: f.prefix, PythonTag: f.pythonTag},
+		Layout:     wheel.Layout{Prefix: f.prefix, PythonTag: pyTag},
 		Strategy:   build.LayerStrategy(f.strategy),
 		SourceDir:  f.source,
 		Ignore:     f.ignore,
@@ -235,6 +234,31 @@ func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platf
 		return nil, nil, err
 	}
 	return img, wheels, nil
+}
+
+// resolveInterpreter decides the target Python version and the site-packages
+// directory tag. If --python is set it is authoritative but must match the
+// base when the base advertises a version; otherwise the version is detected
+// from the base image.
+func resolveInterpreter(f *buildFlags, base v1.Image) (major, minor int, pyTag string, err error) {
+	baseMaj, baseMin, baseOK := build.InterpreterVersion(base)
+
+	if f.pythonTag != "" {
+		maj, min, err := parsePythonTag(f.pythonTag)
+		if err != nil {
+			return 0, 0, "", err
+		}
+		if baseOK && (baseMaj != maj || baseMin != min) {
+			return 0, 0, "", fmt.Errorf("base %q provides Python %d.%d but --python is python%d.%d; pass --python python%d.%d (or pin a matching base)",
+				f.base, baseMaj, baseMin, maj, min, baseMaj, baseMin)
+		}
+		return maj, min, f.pythonTag, nil
+	}
+
+	if !baseOK {
+		return 0, 0, "", fmt.Errorf("could not determine the base image's Python version (no PYTHON_VERSION env or python package in /etc/apko.json); pass --python pythonX.Y")
+	}
+	return baseMaj, baseMin, fmt.Sprintf("python%d.%d", baseMaj, baseMin), nil
 }
 
 // output writes/pushes either a single image or a multi-arch index (exactly one
@@ -334,9 +358,10 @@ func dedupeWheels(in []wheelhouse.ResolvedWheel) []wheelhouse.ResolvedWheel {
 	return out
 }
 
-// resolveTarget derives the wheel-selection target (platform + interpreter)
-// from the --platform and --python flags, defaulting to linux/amd64.
-func resolveTarget(platform *v1.Platform, pythonTag string) (wheel.Target, error) {
+// platformTarget derives the OS/arch part of the wheel-selection target from
+// the --platform value, defaulting to linux/amd64. The interpreter fields are
+// filled in by the caller.
+func platformTarget(platform *v1.Platform) wheel.Target {
 	t := wheel.Target{OS: "linux", Arch: "amd64"}
 	if platform != nil {
 		if platform.OS != "" {
@@ -346,12 +371,7 @@ func resolveTarget(platform *v1.Platform, pythonTag string) (wheel.Target, error
 			t.Arch = platform.Architecture
 		}
 	}
-	maj, min, err := parsePythonTag(pythonTag)
-	if err != nil {
-		return wheel.Target{}, err
-	}
-	t.PyMajor, t.PyMinor = maj, min
-	return t, nil
+	return t
 }
 
 // parsePythonTag parses "python3.12" into (3, 12).
