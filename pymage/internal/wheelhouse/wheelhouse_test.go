@@ -1,11 +1,16 @@
 package wheelhouse
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/imjasonh/terraform-playground/pymage/internal/lock"
 	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
+	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
 )
+
+var linuxAmd64Py312 = wheel.Target{OS: "linux", Arch: "amd64", PyMajor: 3, PyMinor: 12}
 
 func TestResolveSortedAndVerified(t *testing.T) {
 	dir := t.TempDir()
@@ -16,7 +21,7 @@ func TestResolveSortedAndVerified(t *testing.T) {
 		{Name: "Beta", Version: "2.0", Hashes: []string{shaB}},
 		{Name: "alpha", Version: "1.0", Hashes: []string{shaA}},
 	}
-	got, err := Resolve(reqs, []string{dir})
+	got, err := Resolve(reqs, []string{dir}, linuxAmd64Py312)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +40,7 @@ func TestResolveHashMismatch(t *testing.T) {
 	dir := t.TempDir()
 	testwheel.Write(t, dir, testwheel.Spec{Name: "alpha", Version: "1.0", Modules: map[string]string{"alpha.py": "x=1\n"}})
 	reqs := []lock.Requirement{{Name: "alpha", Version: "1.0", Hashes: []string{"deadbeef"}}}
-	if _, err := Resolve(reqs, []string{dir}); err == nil {
+	if _, err := Resolve(reqs, []string{dir}, linuxAmd64Py312); err == nil {
 		t.Fatal("expected hash mismatch error")
 	}
 }
@@ -43,7 +48,51 @@ func TestResolveHashMismatch(t *testing.T) {
 func TestResolveMissing(t *testing.T) {
 	dir := t.TempDir()
 	reqs := []lock.Requirement{{Name: "ghost", Version: "9.9"}}
-	if _, err := Resolve(reqs, []string{dir}); err == nil {
+	if _, err := Resolve(reqs, []string{dir}, linuxAmd64Py312); err == nil {
 		t.Fatal("expected missing-wheel error")
 	}
+}
+
+// TestResolveIncompatiblePlatform proves that a wheel for the wrong platform is
+// rejected rather than silently installed.
+func TestResolveIncompatiblePlatform(t *testing.T) {
+	dir := t.TempDir()
+	// A wheel that only has an x86_64 platform tag.
+	writeNamed(t, dir, "native-1.0-cp312-cp312-manylinux2014_x86_64.whl")
+	reqs := []lock.Requirement{{Name: "native", Version: "1.0"}}
+
+	if _, err := Resolve(reqs, []string{dir}, wheel.Target{OS: "linux", Arch: "arm64", PyMajor: 3, PyMinor: 12}); err == nil {
+		t.Fatal("expected incompatible-platform error for arm64 target")
+	}
+	if _, err := Resolve(reqs, []string{dir}, linuxAmd64Py312); err != nil {
+		t.Fatalf("x86_64 wheel should resolve for amd64 target: %v", err)
+	}
+}
+
+// TestResolvePrefersPlatformSpecific picks the platform-specific wheel when both
+// a pure-python and a native wheel exist for the same version.
+func TestResolvePrefersPlatformSpecific(t *testing.T) {
+	dir := t.TempDir()
+	writeNamed(t, dir, "pkg-1.0-py3-none-any.whl")
+	nativePath := writeNamed(t, dir, "pkg-1.0-cp312-cp312-manylinux2014_x86_64.whl")
+	reqs := []lock.Requirement{{Name: "pkg", Version: "1.0"}}
+
+	got, err := Resolve(reqs, []string{dir}, linuxAmd64Py312)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Path != nativePath {
+		t.Fatalf("expected the native wheel to be preferred, got %s", got[0].Path)
+	}
+}
+
+// writeNamed writes a minimal (not necessarily valid-zip) file with an exact
+// wheel filename, used only to exercise filename-based tag resolution.
+func writeNamed(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }

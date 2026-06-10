@@ -1,6 +1,7 @@
 // Package wheelhouse resolves pinned requirements to concrete wheel files held
-// in one or more local directories ("find-links" style), verifying that each
-// file's sha256 matches the lock.
+// in one or more local directories ("find-links" style), filtering by the
+// target platform/interpreter and verifying that each file's sha256 matches the
+// lock.
 //
 // Keeping resolution local keeps builds hermetic and reproducible: the lock +
 // the wheelhouse fully determine the output. (A network fetcher that downloads
@@ -12,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,31 +37,38 @@ type candidate struct {
 	path    string
 	name    string // normalized
 	version string
+	tags    wheel.Tags
 }
 
-// Resolve matches each requirement to a wheel file found in dirs. It returns
-// resolved wheels sorted by (normalized name, version) for deterministic layer
-// ordering.
-func Resolve(reqs []lock.Requirement, dirs []string) ([]ResolvedWheel, error) {
-	cands, err := scan(dirs)
+// Resolve matches each requirement to a wheel file found in dirs that is
+// compatible with target, verifying its hash. Results are sorted by
+// (normalized name, version) for deterministic layer ordering.
+func Resolve(reqs []lock.Requirement, dirs []string, target wheel.Target) ([]ResolvedWheel, error) {
+	index, err := scan(dirs)
 	if err != nil {
 		return nil, err
 	}
 
 	out := make([]ResolvedWheel, 0, len(reqs))
 	for _, req := range reqs {
-		want := lock.NormalizeName(req.Name)
-		var match *candidate
-		for i := range cands {
-			c := &cands[i]
-			if c.name == want && c.version == req.Version {
-				match = c
-				break
-			}
-		}
-		if match == nil {
+		key := lock.NormalizeName(req.Name) + "\x00" + req.Version
+		cands := index[key]
+		if len(cands) == 0 {
 			return nil, fmt.Errorf("wheelhouse: no wheel found for %s==%s in %v", req.Name, req.Version, dirs)
 		}
+
+		compatible := make([]candidate, 0, len(cands))
+		for _, c := range cands {
+			if c.tags.CompatibleWith(target) {
+				compatible = append(compatible, c)
+			}
+		}
+		if len(compatible) == 0 {
+			return nil, fmt.Errorf("wheelhouse: no wheel for %s==%s is compatible with %s/%s python%d.%d (found %d incompatible candidate(s))",
+				req.Name, req.Version, target.OS, target.Arch, target.PyMajor, target.PyMinor, len(cands))
+		}
+
+		match := pickBest(compatible)
 		sum, err := hashFile(match.path)
 		if err != nil {
 			return nil, err
@@ -80,8 +89,33 @@ func Resolve(reqs []lock.Requirement, dirs []string) ([]ResolvedWheel, error) {
 	return out, nil
 }
 
-func scan(dirs []string) ([]candidate, error) {
-	var cands []candidate
+// pickBest chooses the most specific compatible wheel: platform-specific and
+// ABI-specific wheels are preferred over pure-python ones, with the filename as
+// a deterministic tie-breaker.
+func pickBest(cands []candidate) candidate {
+	sort.Slice(cands, func(i, j int) bool {
+		si, sj := specificity(cands[i].tags), specificity(cands[j].tags)
+		if si != sj {
+			return si > sj
+		}
+		return cands[i].path < cands[j].path
+	})
+	return cands[0]
+}
+
+func specificity(t wheel.Tags) int {
+	s := 0
+	if t.Platform != "any" {
+		s += 2
+	}
+	if t.ABI != "none" {
+		s++
+	}
+	return s
+}
+
+func scan(dirs []string) (map[string][]candidate, error) {
+	index := map[string][]candidate{}
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -91,27 +125,34 @@ func scan(dirs []string) ([]candidate, error) {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".whl") {
 				continue
 			}
-			name, version, err := wheel.ParseFilename(e.Name())
+			tags, err := wheel.ParseTags(e.Name())
 			if err != nil {
 				continue
 			}
-			cands = append(cands, candidate{
+			name := lock.NormalizeName(tags.Name)
+			key := name + "\x00" + tags.Version
+			index[key] = append(index[key], candidate{
 				path:    filepath.Join(dir, e.Name()),
-				name:    lock.NormalizeName(name),
-				version: version,
+				name:    name,
+				version: tags.Version,
+				tags:    tags,
 			})
 		}
 	}
-	return cands, nil
+	return index, nil
 }
 
 func hashFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func containsHash(hashes []string, sum string) bool {

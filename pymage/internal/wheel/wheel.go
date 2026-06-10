@@ -19,6 +19,7 @@ import (
 	"io"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/imjasonh/terraform-playground/pymage/internal/ptar"
@@ -57,18 +58,140 @@ type Wheel struct {
 	z *zip.ReadCloser
 }
 
+// MaxUncompressedFile caps the size of any single wheel member we extract, as
+// a guard against decompression bombs in untrusted wheels.
+const MaxUncompressedFile = 1 << 30 // 1 GiB
+
+// Target describes the image we are building for: a platform and an interpreter
+// version. It is used to decide whether a wheel's compatibility tags apply.
+type Target struct {
+	OS      string // e.g. "linux"
+	Arch    string // e.g. "amd64", "arm64"
+	PyMajor int    // e.g. 3
+	PyMinor int    // e.g. 12
+}
+
+// archAlias maps Go-style architectures to the tokens used in wheel platform
+// tags (e.g. amd64 -> x86_64).
+var archAlias = map[string]string{
+	"amd64":   "x86_64",
+	"arm64":   "aarch64",
+	"386":     "i686",
+	"arm":     "armv7l",
+	"ppc64le": "ppc64le",
+	"s390x":   "s390x",
+}
+
+// CompatibleWith reports whether a wheel with these tags can be installed for
+// the target. It evaluates the cross product of the compressed tag sets.
+func (t Tags) CompatibleWith(tg Target) bool {
+	for _, plat := range strings.Split(t.Platform, ".") {
+		if !platformCompatible(plat, tg) {
+			continue
+		}
+		for _, py := range strings.Split(t.Python, ".") {
+			for _, abi := range strings.Split(t.ABI, ".") {
+				if pyABICompatible(py, abi, tg) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func platformCompatible(plat string, tg Target) bool {
+	if plat == "any" {
+		return true
+	}
+	if tg.OS != "linux" {
+		// We only model linux image platforms precisely; anything else only
+		// matches platform-independent ("any") wheels.
+		return false
+	}
+	alias := archAlias[tg.Arch]
+	if alias == "" {
+		return false
+	}
+	if !strings.HasPrefix(plat, "manylinux") && !strings.HasPrefix(plat, "musllinux") && !strings.HasPrefix(plat, "linux") {
+		return false
+	}
+	return strings.HasSuffix(plat, "_"+alias)
+}
+
+func pyABICompatible(py, abi string, tg Target) bool {
+	pyX := fmt.Sprintf("py%d", tg.PyMajor)
+	pyXY := fmt.Sprintf("py%d%d", tg.PyMajor, tg.PyMinor)
+	cpXY := fmt.Sprintf("cp%d%d", tg.PyMajor, tg.PyMinor)
+
+	switch abi {
+	case "none":
+		// Pure-python (or platform-only) wheels.
+		return py == pyX || py == pyXY || py == cpXY
+	case "abi3":
+		// Stable ABI: a cp3X-abi3 wheel works on any CPython >= 3.X.
+		maj, min, ok := parseCPython(py)
+		return ok && maj == tg.PyMajor && min <= tg.PyMinor
+	default:
+		// Version-specific ABI, e.g. cp312.
+		return abi == cpXY
+	}
+}
+
+func parseCPython(tag string) (maj, min int, ok bool) {
+	if !strings.HasPrefix(tag, "cp") || len(tag) < 4 {
+		return 0, 0, false
+	}
+	rest := tag[2:]
+	maj = int(rest[0] - '0')
+	if maj < 0 || maj > 9 {
+		return 0, 0, false
+	}
+	min, err := strconv.Atoi(rest[1:])
+	if err != nil {
+		return 0, 0, false
+	}
+	return maj, min, true
+}
+
+// Tags holds the compatibility tags from a wheel filename (PEP 427). Each field
+// may be a compressed set joined by ".", e.g. py2.py3 / cp36.cp37.
+type Tags struct {
+	Name     string
+	Version  string
+	Python   string // pytag, e.g. "py3" or "cp312"
+	ABI      string // abitag, e.g. "none", "abi3", "cp312"
+	Platform string // plattag, e.g. "any" or "manylinux2014_x86_64"
+}
+
 // ParseFilename extracts the distribution name and version from a wheel
 // filename per PEP 427: name-version(-build)?-pytag-abitag-plattag.whl.
 func ParseFilename(filename string) (name, version string, err error) {
-	base := path.Base(filename)
-	parts := strings.Split(strings.TrimSuffix(base, ".whl"), "-")
-	if len(parts) < 5 {
-		return "", "", fmt.Errorf("wheel: malformed filename %q", base)
+	t, err := ParseTags(filename)
+	if err != nil {
+		return "", "", err
 	}
-	// The trailing 3 fields are pytag, abitag, plattag. An optional build tag
-	// may sit before them; name/version are everything before that.
-	// name is parts[0], version is parts[1]; build/tag fields follow.
-	return parts[0], parts[1], nil
+	return t.Name, t.Version, nil
+}
+
+// ParseTags parses a wheel filename into name, version, and compatibility tags.
+func ParseTags(filename string) (Tags, error) {
+	base := strings.TrimSuffix(path.Base(filename), ".whl")
+	parts := strings.Split(base, "-")
+	// name-version(-build)?-pytag-abitag-plattag
+	if len(parts) < 5 {
+		return Tags{}, fmt.Errorf("wheel: malformed filename %q", base)
+	}
+	n := len(parts)
+	plat, abi, py := parts[n-1], parts[n-2], parts[n-3]
+	head := parts[:n-3] // name, version, (build)
+	return Tags{
+		Name:     head[0],
+		Version:  head[1],
+		Python:   py,
+		ABI:      abi,
+		Platform: plat,
+	}, nil
 }
 
 // Open reads and parses a wheel file from disk.
@@ -119,6 +242,11 @@ func (w *Wheel) Files(layout Layout) ([]ptar.File, error) {
 		if skip {
 			continue
 		}
+		// Defend against malicious wheels whose member names escape the install
+		// prefix via "..": every installed file must land under the prefix.
+		if !within(prefix, dst) {
+			return nil, fmt.Errorf("wheel: member %q would install outside the prefix (at %q)", f.Name, dst)
+		}
 		data, err := readZip(f)
 		if err != nil {
 			return nil, err
@@ -132,8 +260,15 @@ func (w *Wheel) Files(layout Layout) ([]ptar.File, error) {
 	}
 	out = append(out, scripts...)
 
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// within reports whether child is parent itself or nested under it.
+func within(parent, child string) bool {
+	parent = path.Clean(parent)
+	child = path.Clean(child)
+	return child == parent || strings.HasPrefix(child, parent+"/")
 }
 
 // dest maps a wheel member name to its install destination. It handles the
@@ -246,12 +381,23 @@ func (w *Wheel) fileByName(name string) *zip.File {
 }
 
 func readZip(f *zip.File) ([]byte, error) {
+	if f.UncompressedSize64 > MaxUncompressedFile {
+		return nil, fmt.Errorf("wheel: member %q is %d bytes, exceeds limit of %d", f.Name, f.UncompressedSize64, MaxUncompressedFile)
+	}
 	rc, err := f.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rc.Close() }()
-	return io.ReadAll(rc)
+	// LimitReader guards against a lying header (declared size < actual).
+	data, err := io.ReadAll(io.LimitReader(rc, MaxUncompressedFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > MaxUncompressedFile {
+		return nil, fmt.Errorf("wheel: member %q exceeds limit of %d bytes", f.Name, MaxUncompressedFile)
+	}
+	return data, nil
 }
 
 func isExec(f *zip.File) bool {

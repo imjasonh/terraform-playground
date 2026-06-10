@@ -38,6 +38,61 @@ func TestParseFilename(t *testing.T) {
 	}
 }
 
+func TestParseTagsWithBuildTag(t *testing.T) {
+	tg, err := ParseTags("foo-1.0-1-cp312-cp312-manylinux2014_x86_64.whl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tg.Name != "foo" || tg.Version != "1.0" {
+		t.Fatalf("name/version = %q %q", tg.Name, tg.Version)
+	}
+	if tg.Python != "cp312" || tg.ABI != "cp312" || tg.Platform != "manylinux2014_x86_64" {
+		t.Fatalf("tags = %+v", tg)
+	}
+}
+
+func TestCompatibleWith(t *testing.T) {
+	t312 := Target{OS: "linux", Arch: "amd64", PyMajor: 3, PyMinor: 12}
+	arm := Target{OS: "linux", Arch: "arm64", PyMajor: 3, PyMinor: 12}
+	cases := []struct {
+		py, abi, plat string
+		target        Target
+		want          bool
+	}{
+		{"py3", "none", "any", t312, true},     // pure python
+		{"py2.py3", "none", "any", t312, true}, // compressed set
+		{"cp312", "cp312", "manylinux2014_x86_64", t312, true},
+		{"cp312", "cp312", "manylinux2014_x86_64", arm, false},  // wrong arch
+		{"cp311", "cp311", "manylinux2014_x86_64", t312, false}, // wrong py
+		{"cp37", "abi3", "manylinux2014_x86_64", t312, true},    // stable abi, older ok
+		{"cp313", "abi3", "manylinux2014_x86_64", t312, false},  // stable abi, newer not ok
+		{"cp312", "cp312", "macosx_11_0_arm64", t312, false},    // wrong platform
+	}
+	for _, c := range cases {
+		tg := Tags{Python: c.py, ABI: c.abi, Platform: c.plat}
+		if got := tg.CompatibleWith(c.target); got != c.want {
+			t.Errorf("Tags{%s-%s-%s}.CompatibleWith(%+v) = %v, want %v", c.py, c.abi, c.plat, c.target, got, c.want)
+		}
+	}
+}
+
+func TestFilesRejectsEscapingMember(t *testing.T) {
+	dir := t.TempDir()
+	path, _ := testwheel.Write(t, dir, testwheel.Spec{
+		Name:    "evil",
+		Version: "1.0",
+		Modules: map[string]string{"../../../../../../etc/passwd": "x\n"},
+	})
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+	if _, err := w.Files(layout); err == nil {
+		t.Fatal("expected error for member escaping the install prefix")
+	}
+}
+
 func TestFilesLayout(t *testing.T) {
 	w, err := Open(writeFixture(t))
 	if err != nil {

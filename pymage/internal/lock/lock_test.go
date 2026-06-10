@@ -60,6 +60,18 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestParseRejectsUnsupportedLines(t *testing.T) {
+	for _, in := range []string{
+		"requests>=2.0",                     // not pinned with ==
+		"mypkg @ https://example.com/x.whl", // direct URL reference
+		"justaname",                         // bare name
+	} {
+		if _, err := Parse(strings.NewReader(in)); err == nil {
+			t.Errorf("expected error for unsupported line %q", in)
+		}
+	}
+}
+
 func TestNormalizeName(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"Flask", "flask"},

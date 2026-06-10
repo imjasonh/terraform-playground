@@ -72,8 +72,11 @@ func Parse(r io.Reader) ([]Requirement, error) {
 		}
 		m := pinRE.FindStringSubmatch(stripped)
 		if m == nil {
-			// Not a pinned requirement (e.g. a bare option line); ignore.
-			return nil
+			// We only accept fully-pinned "name==version" requirements. Refuse
+			// (rather than silently drop) anything else — unpinned constraints,
+			// URL/VCS direct references, `-e` editables — so a lock can never
+			// quietly omit a dependency from the image.
+			return fmt.Errorf("lock: unsupported requirement line %q (expected name==version)", strings.TrimSpace(stripped))
 		}
 		req := Requirement{Name: m[1], Version: m[2]}
 		for _, h := range hashRE.FindAllStringSubmatch(stripped, -1) {
