@@ -44,6 +44,9 @@ func TestEnvValidation(t *testing.T) {
 	if _, err := keyValues([]string{"NOEQUALS"}); err == nil {
 		t.Error("expected error for env entry without '='")
 	}
+	if _, err := keyValues([]string{"=value"}); err == nil {
+		t.Error("expected error for env entry with empty key")
+	}
 }
 
 // TestBuildCommandEndToEnd drives the cobra `build` command exactly as a user

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 )
@@ -60,8 +61,10 @@ func Bytes(t *testing.T, s Spec) []byte {
 		}
 	}
 
-	for p, c := range s.Modules {
-		add(p, c)
+	// Iterate maps in sorted key order so the synthesized bytes are stable
+	// across runs (Go randomizes map iteration order).
+	for _, p := range sortedKeys(s.Modules) {
+		add(p, s.Modules[p])
 	}
 
 	distInfo := fmt.Sprintf("%s-%s.dist-info", s.Name, s.Version)
@@ -69,8 +72,8 @@ func Bytes(t *testing.T, s Spec) []byte {
 	add(distInfo+"/WHEEL", "Wheel-Version: 1.0\nGenerator: testwheel\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
 	if len(s.ConsoleScripts) > 0 {
 		ep := "[console_scripts]\n"
-		for name, target := range s.ConsoleScripts {
-			ep += fmt.Sprintf("%s = %s\n", name, target)
+		for _, name := range sortedKeys(s.ConsoleScripts) {
+			ep += fmt.Sprintf("%s = %s\n", name, s.ConsoleScripts[name])
 		}
 		add(distInfo+"/entry_points.txt", ep)
 	}
@@ -80,4 +83,13 @@ func Bytes(t *testing.T, s Spec) []byte {
 		t.Fatalf("zip close: %v", err)
 	}
 	return buf.Bytes()
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

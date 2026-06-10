@@ -287,8 +287,8 @@ func keyValues(in []string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, kv := range in {
 		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			return nil, fmt.Errorf("expected KEY=VALUE, got %q", kv)
+		if !ok || k == "" {
+			return nil, fmt.Errorf("expected KEY=VALUE with a non-empty key, got %q", kv)
 		}
 		out[k] = v
 	}
