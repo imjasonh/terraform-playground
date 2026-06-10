@@ -11,6 +11,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 
+	"github.com/imjasonh/terraform-playground/pymage/internal/cache"
 	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
@@ -190,6 +191,53 @@ func TestPerWheelOnlyNewDepChangesLayers(t *testing.T) {
 	}
 	if matches != 2 {
 		t.Fatalf("expected 2 unchanged dependency layers, got %d (before=%v after=%v)", matches, before, after)
+	}
+}
+
+func TestBuildWithCacheIsConsistentAndPopulates(t *testing.T) {
+	dir := t.TempDir()
+	wheels := []wheelhouse.ResolvedWheel{mkWheel(t, dir, "alpha", "1.0"), mkWheel(t, dir, "beta", "2.0")}
+
+	c, err := cache.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opts := baseOpts(wheels)
+	opts.Cache = c
+
+	// Cold cache build.
+	img1, err := Build(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d1, err := img1.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Warm cache build must produce an identical image.
+	img2, err := Build(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := img2.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1 != d2 {
+		t.Fatalf("cached build digest differs: %s != %s", d1, d2)
+	}
+
+	// And it must match a build with no cache at all (cache changes nothing
+	// about the output).
+	img3, err := Build(baseOpts(wheels))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d3, _ := img3.Digest()
+	if d3 != d1 {
+		t.Fatalf("cached vs uncached digest differ: %s != %s", d1, d3)
 	}
 }
 

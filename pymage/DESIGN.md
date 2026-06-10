@@ -1,7 +1,8 @@
 # `pymage` — a docker-less, layer-aware Python image builder
 
-> Status: **Design / plan** (no code yet). This document proposes the architecture
-> and an incremental implementation plan. Comments and pushback welcome.
+> Status: **Implemented.** This document captures the architecture and rationale;
+> the builder, tests, and CI now live alongside it in this directory. Some items
+> noted as future work (e.g. a network wheel fetcher) remain unimplemented.
 
 ## 1. Goal
 

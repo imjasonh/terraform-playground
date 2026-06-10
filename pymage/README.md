@@ -23,11 +23,15 @@ See [`DESIGN.md`](./DESIGN.md) for the full rationale.
 ## Usage
 
 ```
+# --lock is a pinned + hashed requirements file
+#   (pip-compile / uv pip compile --generate-hashes)
+# --find-links is a directory of the resolved .whl files
+# --source is the application source (optional)
 pymage build \
   --base cgr.dev/chainguard/python:latest \
-  --lock requirements.txt \      # pinned + hashed (pip-compile / uv pip compile --generate-hashes)
-  --find-links ./wheelhouse \    # directory of resolved .whl files
-  --source ./ \                  # application source (optional)
+  --lock requirements.txt \
+  --find-links ./wheelhouse \
+  --source ./ \
   --entrypoint python --entrypoint -m --entrypoint myapp \
   -t registry.example.com/me/myapp:latest
 ```
@@ -45,8 +49,9 @@ is intentionally local so builds are hermetic and reproducible.
 | `--print-digest` | Print only the resulting image digest (no push). |
 | `--sbom PATH` | Write a CycloneDX SBOM of the resolved wheels. |
 | `--layer-strategy` | `per-wheel` (default) or `single-deps-layer`. |
-| `--platform` | Platform for base resolution, e.g. `linux/amd64`. |
-| `--python` | site-packages interpreter dir (default `python3.12`). |
+| `--platform` | Target platform; selects compatible wheels and the base, e.g. `linux/amd64`. |
+| `--python` | Interpreter version / site-packages dir (default `python3.12`); also selects compatible wheels. |
+| `--cache-dir` | Content-addressed layer cache; reuses compressed layers across rebuilds. |
 | `--prefix` | install prefix / venv root (default `/app/.venv`). |
 | `--workdir` | image working dir and source destination (default `/app`). |
 | `--user` | image user, e.g. `65532`. |

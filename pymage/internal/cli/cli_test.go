@@ -17,6 +17,35 @@ import (
 	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
 )
 
+func TestParsePythonTag(t *testing.T) {
+	maj, min, err := parsePythonTag("python3.12")
+	if err != nil || maj != 3 || min != 12 {
+		t.Fatalf("parsePythonTag = %d.%d, %v", maj, min, err)
+	}
+	if _, _, err := parsePythonTag("python3"); err == nil {
+		t.Error("expected error for missing minor version")
+	}
+}
+
+func TestResolveTargetDefaults(t *testing.T) {
+	tg, err := resolveTarget(nil, "python3.11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tg.OS != "linux" || tg.Arch != "amd64" || tg.PyMajor != 3 || tg.PyMinor != 11 {
+		t.Fatalf("unexpected target %+v", tg)
+	}
+}
+
+func TestEnvValidation(t *testing.T) {
+	if _, err := keyValues([]string{"GOOD=1"}); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if _, err := keyValues([]string{"NOEQUALS"}); err == nil {
+		t.Error("expected error for env entry without '='")
+	}
+}
+
 // TestBuildCommandEndToEnd drives the cobra `build` command exactly as a user
 // would: a hashed requirements file + a wheelhouse + source, pushed to a local
 // registry, then verifies the pushed image is pullable and reproducible.

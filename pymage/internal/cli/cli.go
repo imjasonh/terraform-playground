@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -16,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/imjasonh/terraform-playground/pymage/internal/build"
+	"github.com/imjasonh/terraform-playground/pymage/internal/cache"
 	"github.com/imjasonh/terraform-playground/pymage/internal/lock"
 	"github.com/imjasonh/terraform-playground/pymage/internal/sbom"
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
@@ -58,6 +60,7 @@ type buildFlags struct {
 	sbomOut     string
 	requireHash bool
 	insecure    bool
+	cacheDir    string
 }
 
 func buildCmd() *cobra.Command {
@@ -92,6 +95,7 @@ func buildCmd() *cobra.Command {
 	fs.StringVar(&f.sbomOut, "sbom", "", "write a CycloneDX SBOM to this path")
 	fs.BoolVar(&f.requireHash, "require-hashes", true, "require every requirement to carry --hash entries")
 	fs.BoolVar(&f.insecure, "insecure", false, "use plain HTTP for the registry")
+	fs.StringVar(&f.cacheDir, "cache-dir", "", "directory for the content-addressed layer cache (speeds up rebuilds)")
 	return cmd
 }
 
@@ -106,15 +110,19 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		return fmt.Errorf("--find-links is required (a directory of wheels)")
 	}
 
+	if _, err := keyValues(f.env); err != nil {
+		return fmt.Errorf("--env: %w", err)
+	}
+	labels, err := keyValues(f.labels)
+	if err != nil {
+		return fmt.Errorf("--label: %w", err)
+	}
+
 	reqs, err := lock.ParseFile(f.lockFile)
 	if err != nil {
 		return err
 	}
 	if err := lock.Validate(reqs, f.requireHash); err != nil {
-		return err
-	}
-	wheels, err := wheelhouse.Resolve(reqs, f.findLinks)
-	if err != nil {
 		return err
 	}
 
@@ -124,6 +132,15 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	target, err := resolveTarget(platform, f.pythonTag)
+	if err != nil {
+		return err
+	}
+	wheels, err := wheelhouse.Resolve(reqs, f.findLinks, target)
+	if err != nil {
+		return err
 	}
 
 	var nameOpts []name.Option
@@ -136,9 +153,12 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		return err
 	}
 
-	labels, err := keyValues(f.labels)
-	if err != nil {
-		return fmt.Errorf("--label: %w", err)
+	var layerCache *cache.Cache
+	if f.cacheDir != "" {
+		layerCache, err = cache.New(f.cacheDir)
+		if err != nil {
+			return err
+		}
 	}
 
 	img, err := build.Build(build.Options{
@@ -154,6 +174,7 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		Env:        f.env,
 		User:       f.user,
 		Labels:     labels,
+		Cache:      layerCache,
 	})
 	if err != nil {
 		return err
@@ -212,6 +233,44 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 
 	fmt.Println(digest.String())
 	return nil
+}
+
+// resolveTarget derives the wheel-selection target (platform + interpreter)
+// from the --platform and --python flags, defaulting to linux/amd64.
+func resolveTarget(platform *v1.Platform, pythonTag string) (wheel.Target, error) {
+	t := wheel.Target{OS: "linux", Arch: "amd64"}
+	if platform != nil {
+		if platform.OS != "" {
+			t.OS = platform.OS
+		}
+		if platform.Architecture != "" {
+			t.Arch = platform.Architecture
+		}
+	}
+	maj, min, err := parsePythonTag(pythonTag)
+	if err != nil {
+		return wheel.Target{}, err
+	}
+	t.PyMajor, t.PyMinor = maj, min
+	return t, nil
+}
+
+// parsePythonTag parses "python3.12" into (3, 12).
+func parsePythonTag(tag string) (int, int, error) {
+	s := strings.TrimPrefix(tag, "python")
+	majStr, minStr, ok := strings.Cut(s, ".")
+	if !ok {
+		return 0, 0, fmt.Errorf("--python %q must look like pythonX.Y", tag)
+	}
+	maj, err := strconv.Atoi(majStr)
+	if err != nil {
+		return 0, 0, fmt.Errorf("--python %q: bad major version", tag)
+	}
+	min, err := strconv.Atoi(minStr)
+	if err != nil {
+		return 0, 0, fmt.Errorf("--python %q: bad minor version", tag)
+	}
+	return maj, min, nil
 }
 
 func resolveBase(ctx context.Context, ref string, platform *v1.Platform, nameOpts ...name.Option) (v1.Image, error) {

@@ -13,17 +13,24 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 
+	"github.com/imjasonh/terraform-playground/pymage/internal/cache"
 	"github.com/imjasonh/terraform-playground/pymage/internal/ptar"
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheel"
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
 )
+
+// layerFormatVersion is part of the cache key so a change in how we lay out
+// wheels invalidates previously cached layers.
+const layerFormatVersion = "1"
 
 // LayerStrategy controls how dependency layers are partitioned.
 type LayerStrategy string
@@ -65,12 +72,21 @@ type Options struct {
 	User string
 	// Labels are added to the image config.
 	Labels map[string]string
+
+	// Cache, if non-nil, stores/reuses built dependency layers across builds.
+	Cache *cache.Cache
 }
 
 var defaultIgnore = []string{
 	".git", ".git/**",
 	"**/__pycache__/**", "**/*.pyc", "**/*.pyo",
 	".venv/**", "**/.pytest_cache/**", "**/.mypy_cache/**",
+	// Avoid baking common secret material into the image.
+	"**/.env", "**/.env.*",
+	"**/*.pem", "**/*.key", "**/*.pfx", "**/*.p12",
+	"**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
+	"**/.netrc",
+	".ssh", ".ssh/**", ".aws", ".aws/**",
 }
 
 // Build assembles and returns the image. It performs no network I/O; callers
@@ -134,26 +150,84 @@ func dependencyAddendums(opts Options) ([]mutate.Addendum, error) {
 		return []mutate.Addendum{{Layer: layer, History: history("python dependencies")}}, nil
 
 	case PerWheel:
-		adds := make([]mutate.Addendum, 0, len(opts.Wheels))
-		for _, rw := range opts.Wheels {
-			files, err := wheelFiles(rw, opts.Layout)
-			if err != nil {
-				return nil, err
-			}
-			layer, err := ptar.Layer(files)
-			if err != nil {
-				return nil, err
-			}
-			adds = append(adds, mutate.Addendum{
-				Layer:   layer,
+		layers, err := perWheelLayers(opts)
+		if err != nil {
+			return nil, err
+		}
+		adds := make([]mutate.Addendum, len(opts.Wheels))
+		for i, rw := range opts.Wheels {
+			adds[i] = mutate.Addendum{
+				Layer:   layers[i],
 				History: history(fmt.Sprintf("wheel %s==%s", rw.Name, rw.Version)),
-			})
+			}
 		}
 		return adds, nil
 
 	default:
 		return nil, fmt.Errorf("build: unknown layer strategy %q", opts.Strategy)
 	}
+}
+
+// perWheelLayers builds one layer per wheel concurrently (bounded by CPU
+// count), preserving input order. Layer construction is independent and
+// CPU-bound (read + gzip), so parallelism is a straightforward win.
+func perWheelLayers(opts Options) ([]v1.Layer, error) {
+	layers := make([]v1.Layer, len(opts.Wheels))
+	errs := make([]error, len(opts.Wheels))
+
+	workers := runtime.NumCPU()
+	if workers < 1 {
+		workers = 1
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i := range opts.Wheels {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			layers[i], errs[i] = buildWheelLayer(opts.Wheels[i], opts.Layout, opts.Cache)
+		}(i)
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	return layers, nil
+}
+
+// buildWheelLayer returns the layer for a wheel, using the cache when present.
+func buildWheelLayer(rw wheelhouse.ResolvedWheel, layout wheel.Layout, c *cache.Cache) (v1.Layer, error) {
+	key := wheelCacheKey(rw, layout)
+	if c != nil {
+		if l, ok := c.Get(key); ok {
+			return l, nil
+		}
+	}
+	files, err := wheelFiles(rw, layout)
+	if err != nil {
+		return nil, err
+	}
+	layer, err := ptar.Layer(files)
+	if err != nil {
+		return nil, err
+	}
+	if c != nil {
+		// A cache write failure must not fail the build; we just lose the
+		// speedup for this layer.
+		_ = c.Put(key, layer)
+	}
+	return layer, nil
+}
+
+func wheelCacheKey(rw wheelhouse.ResolvedWheel, layout wheel.Layout) string {
+	return strings.Join([]string{
+		"wheel", layerFormatVersion, rw.SHA256, layout.Prefix, layout.PythonTag,
+	}, "|")
 }
 
 func wheelFiles(rw wheelhouse.ResolvedWheel, layout wheel.Layout) ([]ptar.File, error) {
@@ -217,7 +291,7 @@ func sourceLayer(srcDir, workingDir string, extraIgnore []string) (v1.Layer, err
 	if len(files) == 0 {
 		return nil, nil
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	sort.SliceStable(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return ptar.Layer(files)
 }
 
