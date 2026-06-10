@@ -13,6 +13,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/spf13/cobra"
 
@@ -42,7 +43,7 @@ type buildFlags struct {
 	findLinks  []string
 	source     string
 	tag        string
-	platform   string
+	platforms  []string
 	pythonTag  string
 	prefix     string
 	workingDir string
@@ -78,7 +79,7 @@ func buildCmd() *cobra.Command {
 	fs.StringArrayVar(&f.findLinks, "find-links", nil, "directory of wheels to resolve against (repeatable, required)")
 	fs.StringVar(&f.source, "source", "", "application source directory (optional)")
 	fs.StringVarP(&f.tag, "tag", "t", "", "image tag to push, e.g. registry/repo:tag")
-	fs.StringVar(&f.platform, "platform", "", "platform for base resolution, e.g. linux/amd64")
+	fs.StringSliceVar(&f.platforms, "platform", nil, "target platform(s); repeatable or comma-separated, e.g. linux/amd64,linux/arm64 (multiple builds a multi-arch index)")
 	fs.StringVar(&f.pythonTag, "python", "python3.12", "python lib directory name for site-packages")
 	fs.StringVar(&f.prefix, "prefix", "/app/.venv", "install prefix (venv-like root)")
 	fs.StringVar(&f.workingDir, "workdir", "/app", "image working directory and source destination")
@@ -126,19 +127,7 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		return err
 	}
 
-	var platform *v1.Platform
-	if f.platform != "" {
-		platform, err = v1.ParsePlatform(f.platform)
-		if err != nil {
-			return err
-		}
-	}
-
-	target, err := resolveTarget(platform, f.pythonTag)
-	if err != nil {
-		return err
-	}
-	wheels, err := wheelhouse.Resolve(reqs, f.findLinks, target)
+	platforms, err := parsePlatforms(f.platforms)
 	if err != nil {
 		return err
 	}
@@ -146,11 +135,6 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 	var nameOpts []name.Option
 	if f.insecure {
 		nameOpts = append(nameOpts, name.Insecure)
-	}
-
-	base, err := resolveBase(ctx, f.base, platform, nameOpts...)
-	if err != nil {
-		return err
 	}
 
 	var layerCache *cache.Cache
@@ -161,6 +145,69 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		}
 	}
 
+	// Build one image per target platform. With more than one platform we
+	// assemble them into a multi-arch OCI image index; with zero or one we push
+	// a plain image manifest.
+	var (
+		images  []v1.Image
+		adds    []mutate.IndexAddendum
+		allDeps []wheelhouse.ResolvedWheel
+	)
+	targets := platforms
+	if len(targets) == 0 {
+		targets = []v1.Platform{{}} // single build using registry defaults
+	}
+	for i := range targets {
+		p := targets[i]
+		var pp *v1.Platform
+		if p.OS != "" || p.Architecture != "" {
+			pp = &p
+		}
+		img, deps, err := buildOne(ctx, f, reqs, pp, labels, layerCache, nameOpts)
+		if err != nil {
+			return err
+		}
+		images = append(images, img)
+		allDeps = append(allDeps, deps...)
+		desc := v1.Descriptor{}
+		if pp != nil {
+			desc.Platform = pp
+		}
+		adds = append(adds, mutate.IndexAddendum{Add: img, Descriptor: desc})
+	}
+
+	if f.sbomOut != "" {
+		data, err := sbom.Generate(dedupeWheels(allDeps))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(f.sbomOut, data, 0o644); err != nil {
+			return err
+		}
+	}
+
+	if len(platforms) > 1 {
+		idx := mutate.AppendManifests(empty.Index, adds...)
+		return output(ctx, f, nameOpts, nil, idx)
+	}
+	return output(ctx, f, nameOpts, images[0], nil)
+}
+
+// buildOne resolves the base and wheels for a single platform and builds the
+// image, returning the resolved wheels for SBOM aggregation.
+func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platform *v1.Platform, labels map[string]string, layerCache *cache.Cache, nameOpts []name.Option) (v1.Image, []wheelhouse.ResolvedWheel, error) {
+	target, err := resolveTarget(platform, f.pythonTag)
+	if err != nil {
+		return nil, nil, err
+	}
+	wheels, err := wheelhouse.Resolve(reqs, f.findLinks, target)
+	if err != nil {
+		return nil, nil, err
+	}
+	base, err := resolveBase(ctx, f.base, platform, nameOpts...)
+	if err != nil {
+		return nil, nil, err
+	}
 	img, err := build.Build(build.Options{
 		Base:       base,
 		Wheels:     wheels,
@@ -177,33 +224,38 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		Cache:      layerCache,
 	})
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
+	return img, wheels, nil
+}
 
-	if f.sbomOut != "" {
-		data, err := sbom.Generate(wheels)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(f.sbomOut, data, 0o644); err != nil {
-			return err
-		}
+// output writes/pushes either a single image or a multi-arch index (exactly one
+// of img/idx is non-nil).
+func output(ctx context.Context, f *buildFlags, nameOpts []name.Option, img v1.Image, idx v1.ImageIndex) error {
+	var (
+		digest v1.Hash
+		err    error
+	)
+	if idx != nil {
+		digest, err = idx.Digest()
+	} else {
+		digest, err = img.Digest()
 	}
-
-	digest, err := img.Digest()
 	if err != nil {
 		return err
 	}
 
 	if f.ociLayout != "" {
-		if _, err := layout.Write(f.ociLayout, empty.Index); err != nil {
-			return err
-		}
-		p, err := layout.FromPath(f.ociLayout)
+		p, err := layout.Write(f.ociLayout, empty.Index)
 		if err != nil {
 			return err
 		}
-		if err := p.AppendImage(img); err != nil {
+		if idx != nil {
+			err = p.AppendIndex(idx)
+		} else {
+			err = p.AppendImage(img)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -221,10 +273,16 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 		if err != nil {
 			return err
 		}
-		if err := remote.Write(ref, img,
+		opts := []remote.Option{
 			remote.WithContext(ctx),
 			remote.WithAuthFromKeychain(authn.DefaultKeychain),
-		); err != nil {
+		}
+		if idx != nil {
+			err = remote.WriteIndex(ref, idx, opts...)
+		} else {
+			err = remote.Write(ref, img, opts...)
+		}
+		if err != nil {
 			return fmt.Errorf("push: %w", err)
 		}
 		fmt.Printf("pushed %s@%s\n", ref.Context().Name(), digest)
@@ -233,6 +291,39 @@ func runBuild(ctx context.Context, f *buildFlags) error {
 
 	fmt.Println(digest.String())
 	return nil
+}
+
+// parsePlatforms parses the (comma-split, repeatable) --platform values.
+func parsePlatforms(specs []string) ([]v1.Platform, error) {
+	var out []v1.Platform
+	for _, s := range specs {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		p, err := v1.ParsePlatform(s)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, nil
+}
+
+// dedupeWheels removes duplicate wheels (same name+version+sha) so a multi-arch
+// SBOM doesn't list shared pure-python wheels multiple times.
+func dedupeWheels(in []wheelhouse.ResolvedWheel) []wheelhouse.ResolvedWheel {
+	seen := map[string]bool{}
+	var out []wheelhouse.ResolvedWheel
+	for _, w := range in {
+		k := w.Name + "\x00" + w.Version + "\x00" + w.SHA256
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, w)
+	}
+	return out
 }
 
 // resolveTarget derives the wheel-selection target (platform + interpreter)

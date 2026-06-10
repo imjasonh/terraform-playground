@@ -11,11 +11,123 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
 )
+
+// TestBuildMultiArchIndex drives the CLI to build a linux/amd64 + linux/arm64
+// image index from a single host, and verifies the pushed artifact is an index
+// covering both platforms and is reproducible.
+func TestBuildMultiArchIndex(t *testing.T) {
+	s := httptest.NewServer(registry.New())
+	t.Cleanup(s.Close)
+	host := strings.TrimPrefix(s.URL, "http://")
+
+	// A multi-arch base (linux/amd64 + linux/arm64), as a real registry would
+	// serve python:3.12-slim.
+	baseRef := host + "/base:latest"
+	writeMultiArchBase(t, baseRef, []string{"amd64", "arm64"})
+
+	// Pure-python wheels are compatible with every platform.
+	wh := t.TempDir()
+	_, shaA := testwheel.Write(t, wh, testwheel.Spec{Name: "alpha", Version: "1.0", Modules: map[string]string{"alpha/__init__.py": "V='1.0'\n"}})
+	reqDir := t.TempDir()
+	reqFile := filepath.Join(reqDir, "requirements.txt")
+	if err := os.WriteFile(reqFile, []byte(fmt.Sprintf("alpha==1.0 --hash=sha256:%s\n", shaA)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "app.py"), []byte("print('hi')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := func(tag string) error {
+		cmd := Root()
+		cmd.SetArgs([]string{
+			"build",
+			"--base", baseRef,
+			"--lock", reqFile,
+			"--find-links", wh,
+			"--source", src,
+			"--platform", "linux/amd64,linux/arm64",
+			"--entrypoint", "python", "--entrypoint", "/app/app.py",
+			"-t", tag,
+		})
+		cmd.SetOut(os.Stderr)
+		return cmd.Execute()
+	}
+
+	if err := build(host + "/multi:v1"); err != nil {
+		t.Fatalf("multi-arch build failed: %v", err)
+	}
+
+	ref, _ := name.ParseReference(host + "/multi:v1")
+	idx, err := remote.Index(ref, remote.WithContext(context.Background()))
+	if err != nil {
+		t.Fatalf("pulled artifact is not an index: %v", err)
+	}
+	im, err := idx.IndexManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, m := range im.Manifests {
+		if m.Platform != nil {
+			got[m.Platform.OS+"/"+m.Platform.Architecture] = true
+		}
+	}
+	for _, want := range []string{"linux/amd64", "linux/arm64"} {
+		if !got[want] {
+			t.Errorf("index missing platform %s; got %v", want, got)
+		}
+	}
+	if len(im.Manifests) != 2 {
+		t.Fatalf("expected 2 manifests, got %d", len(im.Manifests))
+	}
+	d1, _ := idx.Digest()
+
+	// Reproducible: a second build yields the same index digest.
+	if err := build(host + "/multi:v2"); err != nil {
+		t.Fatal(err)
+	}
+	ref2, _ := name.ParseReference(host + "/multi:v2")
+	idx2, err := remote.Index(ref2, remote.WithContext(context.Background()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, _ := idx2.Digest()
+	if d1 != d2 {
+		t.Fatalf("multi-arch index not reproducible: %s != %s", d1, d2)
+	}
+}
+
+func writeMultiArchBase(t *testing.T, ref string, arches []string) {
+	t.Helper()
+	var adds []mutate.IndexAddendum
+	for _, arch := range arches {
+		img, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{
+			OS:           "linux",
+			Architecture: arch,
+			Config:       v1.Config{Env: []string{"PATH=/usr/local/bin:/usr/bin:/bin"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		adds = append(adds, mutate.IndexAddendum{
+			Add:        img,
+			Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: arch}},
+		})
+	}
+	idx := mutate.AppendManifests(empty.Index, adds...)
+	r, _ := name.ParseReference(ref)
+	if err := remote.WriteIndex(r, idx, remote.WithContext(context.Background())); err != nil {
+		t.Fatalf("write base index: %v", err)
+	}
+}
 
 func TestParsePythonTag(t *testing.T) {
 	maj, min, err := parsePythonTag("python3.12")

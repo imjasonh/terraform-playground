@@ -40,6 +40,25 @@ The wheels referenced by the lock must be present in a `--find-links` directory
 (e.g. produced by `pip download -r requirements.txt -d ./wheelhouse`). Resolution
 is intentionally local so builds are hermetic and reproducible.
 
+### Multi-arch
+
+Pass multiple platforms to build a multi-arch image **index** (one image per
+platform, assembled into an OCI index). Because no Docker daemon is involved,
+this works from any host OS — Linux, macOS, or Windows:
+
+```
+pymage build \
+  --base python:3.12-slim \
+  --platform linux/amd64,linux/arm64 \
+  --lock requirements.txt --find-links ./wheelhouse --source ./ \
+  --entrypoint python --entrypoint -m --entrypoint myapp \
+  -t registry.example.com/me/myapp:latest
+```
+
+Each platform selects its own compatible wheels (pure-python wheels are shared),
+so the wheelhouse must contain a compatible wheel per platform for any compiled
+dependency.
+
 ### Useful flags
 
 | Flag | Description |
@@ -49,7 +68,7 @@ is intentionally local so builds are hermetic and reproducible.
 | `--print-digest` | Print only the resulting image digest (no push). |
 | `--sbom PATH` | Write a CycloneDX SBOM of the resolved wheels. |
 | `--layer-strategy` | `per-wheel` (default) or `single-deps-layer`. |
-| `--platform` | Target platform; selects compatible wheels and the base, e.g. `linux/amd64`. |
+| `--platform` | Target platform(s); selects compatible wheels and base. Repeatable / comma-separated (e.g. `linux/amd64,linux/arm64`) builds a multi-arch image index. |
 | `--python` | Interpreter version / site-packages dir (default `python3.12`); also selects compatible wheels. |
 | `--cache-dir` | Content-addressed layer cache; reuses compressed layers across rebuilds. |
 | `--prefix` | install prefix / venv root (default `/app/.venv`). |
