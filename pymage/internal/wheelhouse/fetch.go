@@ -73,6 +73,15 @@ func (c *wheelCache) put(sum string, r io.Reader) (string, error) {
 	}
 	dest := c.path(sum)
 	if err := os.Rename(tmpName, dest); err != nil {
+		// os.Rename fails on Windows if dest exists; the cache is keyed by the
+		// content hash, so an existing dest is the same wheel — replace it.
+		if _, statErr := os.Stat(dest); statErr == nil {
+			_ = os.Remove(dest)
+			if err := os.Rename(tmpName, dest); err != nil {
+				return "", err
+			}
+			return dest, nil
+		}
 		return "", err
 	}
 	return dest, nil

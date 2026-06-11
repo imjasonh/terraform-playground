@@ -85,7 +85,7 @@ func (c *Cache) PutText(key, val string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, p)
+	return replaceFile(tmpName, p)
 }
 
 // Put stores the layer's compressed blob under key. Writes are atomic (temp
@@ -111,5 +111,20 @@ func (c *Cache) Put(key string, l v1.Layer) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, c.path(key))
+	return replaceFile(tmpName, c.path(key))
+}
+
+// replaceFile atomically moves src onto dst. os.Rename replaces an existing
+// dst on POSIX but fails on Windows, so retry after removing dst there. The
+// store is content-addressed (or overwrites an equivalent value), so removing
+// an existing dst is safe.
+func replaceFile(src, dst string) error {
+	if err := os.Rename(src, dst); err != nil {
+		if _, statErr := os.Stat(dst); statErr == nil {
+			_ = os.Remove(dst)
+			return os.Rename(src, dst)
+		}
+		return err
+	}
+	return nil
 }

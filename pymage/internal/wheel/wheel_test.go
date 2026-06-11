@@ -104,6 +104,25 @@ func TestFilesRejectsEscapingMember(t *testing.T) {
 	}
 }
 
+func TestFilesRejectsInternalDotDot(t *testing.T) {
+	// A member with a ".." segment that resolves back under the prefix (here,
+	// out of site-packages into the prefix's bin) must still be rejected.
+	dir := t.TempDir()
+	path, _ := testwheel.Write(t, dir, testwheel.Spec{
+		Name:    "evil",
+		Version: "1.0",
+		Modules: map[string]string{"pkg/../../../../bin/evil": "x\n"},
+	})
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+	if _, err := w.Files(layout); err == nil {
+		t.Fatal("expected error for member with an internal '..' segment")
+	}
+}
+
 func TestFilesLayout(t *testing.T) {
 	w, err := Open(writeFixture(t))
 	if err != nil {

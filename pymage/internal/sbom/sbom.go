@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"sort"
 
+	"github.com/imjasonh/terraform-playground/pymage/internal/lock"
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
 )
 
@@ -33,21 +34,25 @@ type hash struct {
 
 // Generate returns a deterministic CycloneDX JSON document for the wheels.
 func Generate(wheels []wheelhouse.ResolvedWheel) ([]byte, error) {
+	// Project names are case-insensitive (PEP 503), so sort and build PURLs from
+	// the normalized name for stable ordering and canonical pkg:pypi PURLs.
 	sorted := append([]wheelhouse.ResolvedWheel(nil), wheels...)
 	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].Name != sorted[j].Name {
-			return sorted[i].Name < sorted[j].Name
+		ni, nj := lock.NormalizeName(sorted[i].Name), lock.NormalizeName(sorted[j].Name)
+		if ni != nj {
+			return ni < nj
 		}
 		return sorted[i].Version < sorted[j].Version
 	})
 
 	d := doc{BOMFormat: "CycloneDX", SpecVersion: "1.5", Version: 1}
 	for _, w := range sorted {
+		norm := lock.NormalizeName(w.Name)
 		d.Components = append(d.Components, component{
 			Type:    "library",
-			Name:    w.Name,
+			Name:    norm,
 			Version: w.Version,
-			PURL:    "pkg:pypi/" + w.Name + "@" + w.Version,
+			PURL:    "pkg:pypi/" + norm + "@" + w.Version,
 			Hashes:  []hash{{Alg: "SHA-256", Content: w.SHA256}},
 		})
 	}

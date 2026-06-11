@@ -20,6 +20,14 @@ func TestTextRoundTrip(t *testing.T) {
 	if v, ok := c.GetText("k"); !ok || v != "3.14" {
 		t.Fatalf("GetText = %q,%v; want 3.14,true", v, ok)
 	}
+	// Overwriting an existing key must succeed on all platforms (os.Rename onto
+	// an existing dest fails on Windows; replaceFile handles it).
+	if err := c.PutText("k", "3.15"); err != nil {
+		t.Fatalf("overwrite PutText: %v", err)
+	}
+	if v, ok := c.GetText("k"); !ok || v != "3.15" {
+		t.Fatalf("GetText after overwrite = %q,%v; want 3.15,true", v, ok)
+	}
 }
 
 func TestPutGetRoundTrip(t *testing.T) {

@@ -75,7 +75,7 @@ func Discover(dir string) (Info, error) {
 		}
 	}
 	if info.LockFile == "" {
-		return info, fmt.Errorf("no uv.lock or requirements.txt in %s", abs)
+		return info, fmt.Errorf("no uv.lock, requirements.lock, or requirements.txt in %s", abs)
 	}
 
 	pyproject := filepath.Join(abs, "pyproject.toml")

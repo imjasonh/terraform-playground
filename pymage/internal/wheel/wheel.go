@@ -263,6 +263,12 @@ func (w *Wheel) Files(layout Layout) ([]ptar.File, error) {
 		if f.FileInfo().IsDir() {
 			continue
 		}
+		// Reject any ".." segment outright: even a member that resolves back
+		// under the prefix (e.g. "foo/../../bin/x") could escape site-packages
+		// and clobber other installed files. within() below is defense in depth.
+		if hasDotDotSegment(f.Name) {
+			return nil, fmt.Errorf("wheel: member %q contains a %q path segment", f.Name, "..")
+		}
 		dst, exec, skip := w.dest(f.Name, site, bin, prefix)
 		if skip {
 			continue
@@ -287,6 +293,17 @@ func (w *Wheel) Files(layout Layout) ([]ptar.File, error) {
 
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// hasDotDotSegment reports whether any "/"- or "\"-separated segment of name is
+// "..", which would let a wheel member traverse out of its install directory.
+func hasDotDotSegment(name string) bool {
+	for _, seg := range strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // within reports whether child is parent itself or nested under it.
