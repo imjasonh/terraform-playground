@@ -168,9 +168,31 @@ func dependencyAddendums(opts Options, baseLayers int) ([]mutate.Addendum, error
 	}
 	adds := make([]mutate.Addendum, len(groups))
 	for i, g := range groups {
-		adds[i] = mutate.Addendum{Layer: layers[i], History: history(groupDescription(g))}
+		adds[i] = mutate.Addendum{
+			Layer:       layers[i],
+			History:     history(groupDescription(g)),
+			Annotations: groupAnnotations(g),
+		}
 	}
 	return adds, nil
+}
+
+// WheelsAnnotation is the OCI layer-descriptor annotation key listing the
+// wheels installed by that layer (comma-separated "name==version").
+const WheelsAnnotation = "dev.pymage.wheels"
+
+// wheelList renders a group's wheels as "name==version, ...".
+func wheelList(group []wheelhouse.ResolvedWheel) string {
+	names := make([]string, len(group))
+	for i, w := range group {
+		names[i] = w.Name + "==" + w.Version
+	}
+	return strings.Join(names, ", ")
+}
+
+// groupAnnotations annotates a dependency layer with the wheels it contains.
+func groupAnnotations(group []wheelhouse.ResolvedWheel) map[string]string {
+	return map[string]string{WheelsAnnotation: wheelList(group)}
 }
 
 // wheelBudget returns the maximum number of dependency layers for the build.
@@ -331,13 +353,9 @@ func groupCacheKey(group []wheelhouse.ResolvedWheel, layout wheel.Layout) string
 
 func groupDescription(group []wheelhouse.ResolvedWheel) string {
 	if len(group) == 1 {
-		return fmt.Sprintf("wheel %s==%s", group[0].Name, group[0].Version)
+		return "wheel " + wheelList(group)
 	}
-	names := make([]string, len(group))
-	for i, w := range group {
-		names[i] = w.Name + "==" + w.Version
-	}
-	return fmt.Sprintf("%d wheels: %s", len(group), strings.Join(names, ", "))
+	return fmt.Sprintf("%d wheels: %s", len(group), wheelList(group))
 }
 
 // imageLayerCount returns the number of layers in img (no blob download).

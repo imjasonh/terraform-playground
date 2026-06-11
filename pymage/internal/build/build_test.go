@@ -383,6 +383,80 @@ func TestAutoBudgetClampsWhenBaseExceedsCap(t *testing.T) {
 	}
 }
 
+// TestLayerWheelAnnotations checks each dependency layer descriptor is
+// annotated with the wheel(s) it contains, including packed multi-wheel layers,
+// and that the config history matches.
+func TestLayerWheelAnnotations(t *testing.T) {
+	dir := t.TempDir()
+
+	// Per-wheel: one wheel per layer => one wheel per annotation.
+	t.Run("per-wheel", func(t *testing.T) {
+		wheels := []wheelhouse.ResolvedWheel{mkWheel(t, dir, "alpha", "1.0"), mkWheel(t, dir, "beta", "2.0")}
+		img, err := Build(baseOpts(wheels)) // baseOpts uses PerWheel
+		if err != nil {
+			t.Fatal(err)
+		}
+		ann := layerAnnotations(t, img)
+		got := map[string]bool{}
+		for _, a := range ann {
+			if w, ok := a[WheelsAnnotation]; ok {
+				got[w] = true
+			}
+		}
+		if !got["alpha==1.0"] || !got["beta==2.0"] {
+			t.Fatalf("per-wheel annotations = %v, want alpha==1.0 and beta==2.0", got)
+		}
+	})
+
+	// Packed: multiple wheels share a layer => the annotation lists all of them.
+	t.Run("packed", func(t *testing.T) {
+		var wheels []wheelhouse.ResolvedWheel
+		for i := 0; i < 8; i++ {
+			wheels = append(wheels, mkWheel(t, dir, fmt.Sprintf("pkg%02d", i), "1.0"))
+		}
+		opts := autoOpts(empty.Image, wheels) // MaxWheelLayers: 4 => packing
+		img, err := Build(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ann := layerAnnotations(t, img)
+		total := 0
+		multi := false
+		for _, a := range ann {
+			w, ok := a[WheelsAnnotation]
+			if !ok {
+				t.Fatalf("dependency layer missing %q annotation", WheelsAnnotation)
+			}
+			n := len(strings.Split(w, ", "))
+			total += n
+			if n > 1 {
+				multi = true
+			}
+		}
+		if total != 8 {
+			t.Fatalf("annotations cover %d wheels, want 8", total)
+		}
+		if !multi {
+			t.Fatal("expected at least one layer to list multiple wheels")
+		}
+	})
+}
+
+func layerAnnotations(t *testing.T, img v1.Image) []map[string]string {
+	t.Helper()
+	m, err := img.Manifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []map[string]string
+	for _, l := range m.Layers {
+		if len(l.Annotations) > 0 {
+			out = append(out, l.Annotations)
+		}
+	}
+	return out
+}
+
 func TestAutoReproducible(t *testing.T) {
 	dir := t.TempDir()
 	wheels := makeWheels(t, dir, 12)

@@ -122,6 +122,11 @@ layers by default (`max-layers`, counting the base image's layers, the
 dependency layers, and the app source layer). Set `max-wheel-layers` to cap the
 dependency layers directly.
 
+Each dependency layer records the wheels it installs both in the image's config
+history and as an OCI layer-descriptor annotation (`dev.pymage.wheels`,
+comma-separated `name==version`), so `crane manifest` / `docker inspect` show
+exactly which wheels each layer contains — including packed multi-wheel layers.
+
 When there are more wheels than the budget allows, pymage **bin-packs** them by
 hashing each distribution's (normalized) name to a stable bucket. Because a
 wheel's bucket depends only on its name, adding, removing, or version-bumping a
