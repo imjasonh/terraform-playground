@@ -76,6 +76,10 @@ Dockerfile:
   contains.
 - **Fast, docker-less builds** from any OS.
 
+> For the large **AI/GPU image** case (PyTorch + CUDA wheels, where deps are
+> ~98% of a ~3 GB image and a one-dep bump re-uploads ~11 MB vs ~2.9 GB), see
+> [`ai-image-comparison.md`](./ai-image-comparison.md).
+
 ## Incremental rebuilds: where layering pays off
 
 The study above compares *first* builds. The bigger day-to-day win is what

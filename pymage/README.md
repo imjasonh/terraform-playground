@@ -20,6 +20,13 @@ See [`DESIGN.md`](./DESIGN.md) for the full rationale.
   small layer (and the manifest).
 - **Reproducible**: same lock + same source + same base ⇒ same image digest.
 
+This pays off most on **large AI/GPU images**, where modern `torch` wheels carry
+the CUDA runtime (`nvidia-*` wheels) and the dependencies are ~98% of the image.
+Bumping one dependency re-uploads a single ~11 MB layer instead of re-pushing the
+whole ~2.9 GB `uv sync` venv layer — see
+[`docs/ai-image-comparison.md`](./docs/ai-image-comparison.md). For pure-wheel
+web apps see [`docs/real-world-comparison.md`](./docs/real-world-comparison.md).
+
 ## Usage (uv projects)
 
 pymage is designed for [uv](https://docs.astral.sh/uv/) projects. Configure it
