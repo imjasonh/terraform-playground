@@ -32,14 +32,8 @@ func TestDiscoverExample(t *testing.T) {
 			t.Fatalf("entrypoint = %v, want %v", info.Entrypoint, wantEP)
 		}
 	}
-	found := false
-	for _, e := range info.ExtraEnv {
-		if e == "PYTHONPATH=/app/src" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected PYTHONPATH env, got %v", info.ExtraEnv)
+	if !info.SrcLayout {
+		t.Fatal("expected SrcLayout=true for the src/-layout example project")
 	}
 
 	if info.Config.Base != "cgr.dev/chainguard/python:latest" {

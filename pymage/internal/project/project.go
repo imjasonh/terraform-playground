@@ -17,8 +17,11 @@ type Info struct {
 	LockFile   string
 	SourceDir  string
 	Entrypoint []string
-	ExtraEnv   []string // KEY=VALUE entries to add to the image
-	Config     Config   // [tool.pymage] from pyproject.toml
+	// SrcLayout is true when the project uses a top-level src/ directory, in
+	// which case the caller should add "<workdir>/src" to PYTHONPATH (the path
+	// depends on the configurable workdir, so it isn't baked here).
+	SrcLayout bool
+	Config    Config // [tool.pymage] from pyproject.toml
 }
 
 // Config mirrors the [tool.pymage] table in pyproject.toml. Every field maps to
@@ -56,6 +59,9 @@ func Discover(dir string) (Info, error) {
 		return Info{}, err
 	}
 	info := Info{Root: abs, SourceDir: abs}
+	if st, err := os.Stat(filepath.Join(abs, "src")); err == nil && st.IsDir() {
+		info.SrcLayout = true
+	}
 
 	lockNames := []string{"uv.lock", "requirements.lock", "requirements.txt"}
 	for _, name := range lockNames {
@@ -73,7 +79,7 @@ func Discover(dir string) (Info, error) {
 	if data, err := os.ReadFile(pyproject); err == nil {
 		var pp pyProject
 		if err := toml.Unmarshal(data, &pp); err == nil {
-			info.Entrypoint, info.ExtraEnv = entrypointFromPyproject(pp, abs)
+			info.Entrypoint = entrypointFromPyproject(pp, abs)
 			info.Config = resolveConfig(pp.Tool.Pymage, abs)
 		}
 	}
@@ -102,13 +108,7 @@ func resolveConfig(c Config, root string) Config {
 	return c
 }
 
-func entrypointFromPyproject(pp pyProject, root string) ([]string, []string) {
-	var extraEnv []string
-	srcDir := filepath.Join(root, "src")
-	if st, err := os.Stat(srcDir); err == nil && st.IsDir() {
-		extraEnv = append(extraEnv, "PYTHONPATH=/app/src")
-	}
-
+func entrypointFromPyproject(pp pyProject, root string) []string {
 	// A [project.scripts] console script is the preferred entrypoint, but
 	// pymage copies the app *source* (it doesn't install the project as a
 	// wheel), so the launcher binary the script name refers to does not exist
@@ -117,7 +117,7 @@ func entrypointFromPyproject(pp pyProject, root string) ([]string, []string) {
 	// importable (it is: via PYTHONPATH for src layouts, or the workdir).
 	if _, target, ok := chooseScript(pp); ok {
 		if ep := scriptEntrypoint(target); ep != nil {
-			return ep, extraEnv
+			return ep
 		}
 	}
 
@@ -126,9 +126,9 @@ func entrypointFromPyproject(pp pyProject, root string) ([]string, []string) {
 		pkg = "app"
 	}
 	if moduleDir(root, pkg) || srcModuleDir(root, pkg) {
-		return []string{"python", "-m", pkg}, extraEnv
+		return []string{"python", "-m", pkg}
 	}
-	return nil, extraEnv
+	return nil
 }
 
 // chooseScript selects a [project.scripts] entry deterministically: the one

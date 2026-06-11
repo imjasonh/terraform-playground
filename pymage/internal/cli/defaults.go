@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -93,8 +94,13 @@ func applyDefaults(cmd *cobra.Command, f *buildFlags) error {
 	}
 
 	// Env is additive: auto-detected (PYTHONPATH) first, then config, then any
-	// --env flags last so they win on duplicate keys.
-	f.env = append(append(append([]string{}, proj.ExtraEnv...), cfg.Env...), f.env...)
+	// --env flags last so they win on duplicate keys. The src-layout PYTHONPATH
+	// is derived from the resolved workdir, since the source is copied there.
+	var autoEnv []string
+	if proj.SrcLayout {
+		autoEnv = append(autoEnv, "PYTHONPATH="+path.Join(f.workingDir, "src"))
+	}
+	f.env = append(append(autoEnv, cfg.Env...), f.env...)
 
 	// Labels: config labels first, --label flags appended so they override.
 	if len(cfg.Labels) > 0 {
@@ -132,7 +138,7 @@ func validateBuildFlags(f *buildFlags) error {
 		return fmt.Errorf("invalid --layer-strategy %q (want auto, per-wheel, or single-deps-layer)", f.strategy)
 	}
 	if f.maxLayers < 0 {
-		return fmt.Errorf("--max-layers must be >= 1, got %d", f.maxLayers)
+		return fmt.Errorf("--max-layers must be >= 0 (0 means use the default), got %d", f.maxLayers)
 	}
 	if f.maxWheelLayers < 0 {
 		return fmt.Errorf("--max-wheel-layers must be >= 0, got %d", f.maxWheelLayers)

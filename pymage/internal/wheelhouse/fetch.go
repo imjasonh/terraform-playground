@@ -25,9 +25,8 @@ func openWheelCache(dir string) (*wheelCache, error) {
 	if dir == "" {
 		return nil, nil
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("wheel cache: %w", err)
-	}
+	// The directory is created lazily on first download (see put), so resolving
+	// entirely from a local wheelhouse never touches the filesystem.
 	return &wheelCache{dir: dir}, nil
 }
 
@@ -49,6 +48,9 @@ func (c *wheelCache) get(sum string) (string, bool) {
 func (c *wheelCache) put(sum string, r io.Reader) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("no wheel cache configured")
+	}
+	if err := os.MkdirAll(c.dir, 0o755); err != nil {
+		return "", fmt.Errorf("wheel cache: %w", err)
 	}
 	tmp, err := os.CreateTemp(c.dir, ".tmp-")
 	if err != nil {

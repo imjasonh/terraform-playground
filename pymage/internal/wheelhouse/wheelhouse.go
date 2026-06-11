@@ -43,10 +43,22 @@ type candidate struct {
 
 // Resolve matches each requirement to a wheel file found in dirs that is
 // compatible with target, verifying its hash. When dirs are empty or miss a
-// package, wheel URLs embedded in the lock are downloaded into wheelCacheDir.
-// Results are sorted by (normalized name, version) for deterministic ordering.
+// package, wheel URLs embedded in the lock are downloaded into the default
+// per-user cache directory. Results are sorted by (normalized name, version)
+// for deterministic ordering.
 func Resolve(reqs []lock.Requirement, dirs []string, target wheel.Target) ([]ResolvedWheel, error) {
-	return ResolveContext(context.Background(), reqs, dirs, target, "")
+	return ResolveContext(context.Background(), reqs, dirs, target, defaultWheelCacheDir())
+}
+
+// defaultWheelCacheDir returns the per-user wheel download cache, or "" if the
+// user cache directory can't be determined (in which case lock-based downloads
+// are unavailable but local resolution still works).
+func defaultWheelCacheDir() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "pymage", "wheels")
 }
 
 // ResolveContext is Resolve with an explicit context and on-disk wheel cache

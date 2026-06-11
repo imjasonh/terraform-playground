@@ -423,6 +423,77 @@ func TestBuildStdoutIsImageRef(t *testing.T) {
 	}
 }
 
+// TestSrcLayoutPythonPathFollowsWorkdir verifies the auto-detected src-layout
+// PYTHONPATH is derived from --workdir (not hard-coded to /app).
+func TestSrcLayoutPythonPathFollowsWorkdir(t *testing.T) {
+	ctx := context.Background()
+	s := httptest.NewServer(registry.New())
+	t.Cleanup(s.Close)
+	host := strings.TrimPrefix(s.URL, "http://")
+
+	baseRef := host + "/base:latest"
+	base, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{
+		OS: "linux", Architecture: "amd64",
+		Config: v1.Config{Env: []string{"PYTHON_VERSION=3.12.7", "PATH=/usr/bin"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	br, _ := name.ParseReference(baseRef)
+	if err := remote.Write(br, base, remote.WithContext(ctx)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A src-layout project with no dependencies (empty requirements lock).
+	proj := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proj, "src", "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "src", "app", "__init__.py"), []byte("def main():\n    pass\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "pyproject.toml"),
+		[]byte("[project]\nname = \"app\"\nversion = \"0.1.0\"\n\n[project.scripts]\napp = \"app:main\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "requirements.txt"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := Root()
+	cmd.SetArgs([]string{
+		"build", proj,
+		"--base", baseRef,
+		"--workdir", "/srv",
+		"--repo", host + "/app",
+		"-t", "v1",
+	})
+	cmd.SetOut(os.Stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+
+	ref, _ := name.ParseReference(host + "/app:v1")
+	img, err := remote.Image(ref, remote.WithContext(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := strings.Join(cf.Config.Env, "\n")
+	if !strings.Contains(env, "/srv/src") {
+		t.Errorf("expected workdir-derived /srv/src on PYTHONPATH, got env:\n%s", env)
+	}
+	if strings.Contains(env, "/app/src") {
+		t.Errorf("PYTHONPATH should follow --workdir, not hard-code /app/src; env:\n%s", env)
+	}
+	if cf.Config.WorkingDir != "/srv" {
+		t.Errorf("workdir = %q, want /srv", cf.Config.WorkingDir)
+	}
+}
+
 func TestPushConcurrency(t *testing.T) {
 	if got := pushConcurrency(7); got != 7 {
 		t.Errorf("explicit value not honored: got %d, want 7", got)

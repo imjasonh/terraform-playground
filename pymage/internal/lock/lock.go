@@ -89,7 +89,7 @@ func DiscoverLock(dir string) (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("no lock file found in %q (expected uv.lock or requirements.txt)", dir)
+	return "", fmt.Errorf("no lock file found in %q (expected uv.lock, requirements.lock, or requirements.txt)", dir)
 }
 
 // Parse reads pinned requirements from r. Logical lines may span multiple
