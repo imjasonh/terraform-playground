@@ -107,6 +107,14 @@ build-backend = "hatchling.build"
 	}
 }
 
+func names(reqs []Requirement) map[string]bool {
+	m := map[string]bool{}
+	for _, r := range reqs {
+		m[NormalizeName(r.Name)] = true
+	}
+	return m
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

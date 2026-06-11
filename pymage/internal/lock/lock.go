@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -80,21 +81,6 @@ func ParseFile(path string) ([]Requirement, error) {
 	return Parse(f)
 }
 
-// ParseAny reads a lock file, choosing the parser from the filename:
-// uv.lock is parsed as TOML; everything else is treated as requirements.txt.
-func ParseAny(path string) ([]Requirement, error) {
-	if strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".lock") &&
-		!strings.HasSuffix(strings.ToLower(path), "requirements.lock") {
-		// uv.lock / poetry.lock-style names ending in .lock (not requirements.lock
-		// which is pip-compile output in requirements format).
-		if strings.EqualFold(filepath.Base(path), "uv.lock") {
-			return ParseUVLockFile(path)
-		}
-	}
-	// requirements.lock and requirements.txt both use the pip format.
-	return ParseFile(path)
-}
-
 // Lock is a parsed lock file (parsed once) that can be resolved per target.
 type Lock struct {
 	isUV bool
@@ -133,22 +119,22 @@ func Load(path string) (*Lock, error) {
 // Resolve returns the pinned requirements for the given target.
 //
 // For a uv.lock, resolution (the runtime closure, extras, workspace package,
-// and group selection) is delegated to `uv export` when uv and a pyproject.toml
-// are available — uv is the source of truth, so we don't reimplement its
-// resolver. We then evaluate the per-requirement environment markers uv emits
-// for the target and attach wheel/sdist URLs from the lock. When uv isn't
-// available (e.g. air-gapped, or a bare uv.lock with no project), we fall back
-// to a built-in closure. For requirements-format locks the list is already flat
-// and pinned; we only evaluate any inline markers.
+// and group selection) is delegated to `uv export` — uv is the source of truth,
+// so we do not reimplement its resolver. We then evaluate the per-requirement
+// environment markers uv emits for the target and attach wheel/sdist URLs from
+// the lock. uv is therefore **required** to build from a uv.lock: if it isn't
+// available we fail rather than fall back to a divergent resolver. For
+// requirements-format locks the list is already flat and pinned; we only
+// evaluate any inline markers.
 func (l *Lock) Resolve(o Options) ([]Requirement, error) {
 	env := o.markerEnv()
 	if !l.isUV {
 		return filterByMarker(l.reqs, env), nil
 	}
-	if l.path != "" && uvExportUsable(l.path) {
-		return uvExportResolve(l.path, l.uv, o, env)
+	if _, err := exec.LookPath("uv"); err != nil {
+		return nil, fmt.Errorf("resolving %s requires uv on PATH (pymage delegates uv.lock resolution to `uv export`); install uv (https://docs.astral.sh/uv/), or export a hashed requirements.txt and build with --lock requirements.txt --find-links", filepath.Base(l.path))
 	}
-	return resolveUV(l.uv, UVOptions{Package: o.Package, Extras: o.Extras, Env: env})
+	return uvExportResolve(l.path, l.uv, o, env)
 }
 
 // markerEnv builds the marker environment for the target, or nil when no target

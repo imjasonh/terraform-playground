@@ -164,8 +164,11 @@ installed and a `pyproject.toml` is present, resolution is delegated to
 `uv export --frozen --no-dev` — uv is the source of truth for the closure,
 extras, groups, and workspace selection, so pymage doesn't reimplement its
 resolver. pymage then evaluates the environment markers uv emits for the target
-and attaches wheel URLs from the lock. (Without uv, a built-in closure walker is
-used as a fallback.) The selectors below map onto `uv export` flags:
+and attaches wheel URLs from the lock. **`uv` is therefore required to build
+from a `uv.lock`** — if it isn't installed the build fails (rather than falling
+back to a second, potentially divergent resolver); as an alternative, export a
+hashed `requirements.txt` and build with `--lock requirements.txt --find-links`.
+The selectors below map onto `uv export` flags:
 
 - `--extra <group>` enables one of the project's own
   `[project.optional-dependencies]` groups (repeatable). Extras requested *by*

@@ -3,22 +3,10 @@ package lock
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
-
-// uvExportUsable reports whether we should resolve via `uv export`: uv must be
-// on PATH and the lock must sit next to a pyproject.toml (a real uv project, as
-// `uv export` requires). Bare/synthetic locks fall back to the built-in walker.
-func uvExportUsable(lockPath string) bool {
-	if _, err := exec.LookPath("uv"); err != nil {
-		return false
-	}
-	_, err := os.Stat(filepath.Join(filepath.Dir(lockPath), "pyproject.toml"))
-	return err == nil
-}
 
 // uvExportResolve delegates resolution to `uv export`, which produces the
 // project's universal runtime requirement set (closure, extras, groups, and
