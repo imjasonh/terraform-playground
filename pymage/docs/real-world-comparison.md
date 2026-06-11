@@ -123,13 +123,21 @@ the worst case is one bucket rather than the whole environment.)
 
 1. **(FIXED) Installed the whole `uv.lock`, including dev groups.** Caused
    50–63% dependency bloat above. Now resolves the runtime closure.
-2. **(FIXED) sdist-only dependencies.** `imgpush` previously failed on
-   `timeout-decorator==0.5.0`, which publishes no wheel. pymage now builds a
-   wheel from the sdist (`pip wheel --no-deps`) and feeds it into the existing
-   layer path; the build host needs `python`/`pip`. Pure-python sdists build to
-   `py3-none-any` (any target); compiled sdists build for the host platform only
-   (cross-arch builds of those still error clearly). `imgpush` now builds with 52
-   runtime wheels including the sdist-built `timeout-decorator`.
+2. **(FIXED, opt-in) sdist-only dependencies.** `imgpush` previously failed on
+   `timeout-decorator==0.5.0`, which publishes no wheel. With `--build-sdists`
+   (or `build-sdists` in `[tool.pymage]`) pymage builds a wheel from the sdist
+   (`pip wheel --no-deps`, host `python`/`pip` required) and feeds it into the
+   existing layer path; `imgpush` then builds with 52 runtime wheels including
+   the sdist-built `timeout-decorator`. It is **off by default and intentionally
+   a power-user feature** for two reasons:
+   - **Security:** building an sdist runs the dependency's own build code on the
+     host with no container isolation (pymage has no daemon to sandbox it), so a
+     malicious dependency could get code execution on the build machine. Without
+     the flag, a wheelless package fails fast with guidance to supply a wheel via
+     `--find-links` or opt in.
+   - **Single-arch:** compiled sdists can only be built for the host platform, so
+     enabling them doesn't make a compiled package multi-arch — pure-python
+     sdists build to `py3-none-any` and remain portable.
 3. **No system/OS packages (by design — documented).** pymage installs Python
    wheels, not apt/apk packages. `imgpush` needs `libmagickwand` (for `Wand`) and
    `nginx`; those must come from the **base image**. Projects with system-library
@@ -162,7 +170,7 @@ the worst case is one bucket rather than the whole environment.)
 
 After the runtime-closure fix and this round of work, **pymage is a smaller,
 faster, reproducible alternative to a uv Dockerfile** for the projects studied:
-all three now build (including `imgpush`, via sdist building), with no daemon and
+all three now build (including `imgpush`, via opt-in sdist building), with no daemon and
 no build tooling in the image, and incremental rebuilds re-upload only changed
 layers. The main remaining caveat is **runtime system libraries**, which must be
 provided by the base image (documented), plus the multi-platform default for
