@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/imjasonh/terraform-playground/pymage/internal/build"
+	"github.com/imjasonh/terraform-playground/pymage/internal/cache"
 	"github.com/imjasonh/terraform-playground/pymage/internal/project"
 )
 
@@ -63,6 +65,9 @@ func applyDefaults(cmd *cobra.Command, f *buildFlags) error {
 	}
 	if !changed("push-concurrency") && cfg.PushJobs != 0 {
 		f.pushJobs = cfg.PushJobs
+	}
+	if !changed("no-cache") && cfg.NoCache {
+		f.noCache = true
 	}
 	if !changed("python") && cfg.Python != "" {
 		f.pythonTag = cfg.Python
@@ -119,20 +124,32 @@ func applyDefaults(cmd *cobra.Command, f *buildFlags) error {
 	return nil
 }
 
-func wheelCacheDir(f *buildFlags) (string, error) {
-	if f.cacheDir != "" {
-		return filepath.Join(f.cacheDir, "wheels"), nil
+// setupCaches resolves the build caches. Caching is on by default; --no-cache
+// disables persistent caching (downloads still work, via an ephemeral temp dir
+// that the returned cleanup removes). The layer cache also serves the small
+// metadata cache (interpreter detection), so they share one directory.
+func setupCaches(f *buildFlags) (layer, meta *cache.Cache, wheelDir string, cleanup func(), err error) {
+	noop := func() {}
+	if f.noCache {
+		tmp, err := os.MkdirTemp("", "pymage-wheels-")
+		if err != nil {
+			return nil, nil, "", noop, err
+		}
+		return nil, nil, tmp, func() { _ = os.RemoveAll(tmp) }, nil
 	}
-	return project.DefaultWheelCacheDir()
-}
 
-// metaCacheDir is where small build metadata (e.g. detected base interpreter
-// versions) is cached.
-func metaCacheDir(f *buildFlags) (string, error) {
-	if f.cacheDir != "" {
-		return f.cacheDir, nil
+	root := f.cacheDir
+	if root == "" {
+		root, err = project.DefaultCacheDir()
+		if err != nil {
+			return nil, nil, "", noop, err
+		}
 	}
-	return project.DefaultCacheDir()
+	c, err := cache.New(root)
+	if err != nil {
+		return nil, nil, "", noop, err
+	}
+	return c, c, filepath.Join(root, "wheels"), noop, nil
 }
 
 func validateBuildFlags(f *buildFlags) error {

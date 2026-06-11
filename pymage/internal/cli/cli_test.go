@@ -24,6 +24,19 @@ import (
 	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
 )
 
+// TestMain points the default cache dir at a throwaway location so the CLI
+// tests (which use the on-by-default cache) don't write to the user's cache.
+func TestMain(m *testing.M) {
+	tmp, err := os.MkdirTemp("", "pymage-test-cache-")
+	if err != nil {
+		panic(err)
+	}
+	_ = os.Setenv("PYMAGE_CACHE_DIR", tmp)
+	code := m.Run()
+	_ = os.RemoveAll(tmp)
+	os.Exit(code)
+}
+
 // TestBuildMultiArchIndex drives the CLI to build a linux/amd64 + linux/arm64
 // image index from a single host, and verifies the pushed artifact is an index
 // covering both platforms and is reproducible.
@@ -558,6 +571,44 @@ func TestCachedInterpreter(t *testing.T) {
 	}
 	if maj, min, ok := cachedInterpreter(base, mc); !ok || maj != 3 || min != 11 {
 		t.Fatalf("cache hit: %d.%d ok=%v, want 3.11 (from cache)", maj, min, ok)
+	}
+}
+
+func TestSetupCaches(t *testing.T) {
+	// Default: caching on; layer and meta share one cache; wheels under it.
+	root := t.TempDir()
+	layer, meta, wheelDir, cleanup, err := setupCaches(&buildFlags{cacheDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if layer == nil || meta == nil {
+		t.Fatal("expected caches to be enabled by default")
+	}
+	if layer != meta {
+		t.Error("layer and meta cache should share one instance")
+	}
+	if wheelDir != filepath.Join(root, "wheels") {
+		t.Errorf("wheel dir = %q, want %q", wheelDir, filepath.Join(root, "wheels"))
+	}
+
+	// --no-cache: no persistent caches, ephemeral wheel dir removed by cleanup.
+	layer, meta, wheelDir, cleanup, err = setupCaches(&buildFlags{noCache: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layer != nil || meta != nil {
+		t.Error("--no-cache should disable layer/meta caches")
+	}
+	if wheelDir == "" {
+		t.Fatal("expected an ephemeral wheel dir with --no-cache")
+	}
+	if _, err := os.Stat(wheelDir); err != nil {
+		t.Fatalf("ephemeral wheel dir should exist: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(wheelDir); !os.IsNotExist(err) {
+		t.Errorf("cleanup should remove the ephemeral wheel dir, stat err = %v", err)
 	}
 }
 

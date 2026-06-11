@@ -72,6 +72,7 @@ the config value, which overrides the built-in default.
 | `max-layers` | `--max-layers` | `127` |
 | `max-wheel-layers` | `--max-wheel-layers` | *(derived from `max-layers`)* |
 | `push-concurrency` | `--push-concurrency` | auto (≥ 4, scales with CPUs) |
+| `no-cache` | `--no-cache` | `false` (caching is on by default) |
 | `python` | `--python` | auto-detected from the base |
 | `prefix` | `--prefix` | `/app/.venv` |
 | `workdir` | `--workdir` | `/app` |
@@ -178,7 +179,8 @@ base that advertises its version.
 | `--push-concurrency` | Max concurrent layer uploads when pushing (0 = auto). |
 | `--platform` | Target platform(s); selects compatible wheels and base. Repeatable / comma-separated (e.g. `linux/amd64,linux/arm64`) builds a multi-arch image index. Defaults to the platforms the base image supports. |
 | `--python` | Interpreter version, e.g. `python3.12`. Optional — **auto-detected from the base** when omitted; if set, must match the base. Drives wheel selection and the site-packages layout. |
-| `--cache-dir` | Content-addressed layer cache; reuses compressed layers and downloaded wheels across rebuilds. |
+| `--cache-dir` | Cache root (default: `$PYMAGE_CACHE_DIR` or the per-user cache dir). Caches compressed layers, downloaded wheels, and base interpreter detection. |
+| `--no-cache` | Disable all caching (layers, downloaded wheels, interpreter detection). |
 | `--prefix` | install prefix / venv root (default `/app/.venv`). |
 | `--workdir` | image working dir and source destination (default `/app`). |
 | `--user` | image user, e.g. `65532`. |

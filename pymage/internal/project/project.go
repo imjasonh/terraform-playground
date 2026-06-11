@@ -45,6 +45,7 @@ type Config struct {
 	Env            []string          `toml:"env"`
 	Labels         map[string]string `toml:"labels"`
 	FindLinks      []string          `toml:"find-links"`
+	NoCache        bool              `toml:"no-cache"`
 }
 
 const defaultBase = "cgr.dev/chainguard/python:latest"
@@ -182,8 +183,12 @@ func srcModuleDir(root, pkg string) bool {
 	return err == nil && st.IsDir()
 }
 
-// DefaultCacheDir returns pymage's per-user cache root.
+// DefaultCacheDir returns pymage's cache root: $PYMAGE_CACHE_DIR if set,
+// otherwise a "pymage" directory under the per-user cache dir.
 func DefaultCacheDir() (string, error) {
+	if v := os.Getenv("PYMAGE_CACHE_DIR"); v != "" {
+		return v, nil
+	}
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		return "", err

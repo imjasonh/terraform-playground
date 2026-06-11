@@ -69,6 +69,7 @@ type buildFlags struct {
 	requireHash bool
 	insecure    bool
 	cacheDir    string
+	noCache     bool
 }
 
 func buildCmd() *cobra.Command {
@@ -112,7 +113,8 @@ func buildCmd() *cobra.Command {
 	fs.StringVar(&f.sbomOut, "sbom", "", "write a CycloneDX SBOM to this path")
 	fs.BoolVar(&f.requireHash, "require-hashes", true, "require every requirement to carry --hash entries")
 	fs.BoolVar(&f.insecure, "insecure", false, "use plain HTTP for the registry")
-	fs.StringVar(&f.cacheDir, "cache-dir", "", "directory for the content-addressed layer cache (speeds up rebuilds)")
+	fs.StringVar(&f.cacheDir, "cache-dir", "", "cache root directory (default: per-user cache dir)")
+	fs.BoolVar(&f.noCache, "no-cache", false, "disable all build caches (layers, downloaded wheels, interpreter detection)")
 	return cmd
 }
 
@@ -170,24 +172,13 @@ func runBuild(cmd *cobra.Command, f *buildFlags) error {
 		platforms = baseSet.Platforms()
 	}
 
-	var layerCache *cache.Cache
-	wheelCache, err := wheelCacheDir(f)
+	// Caching is on by default (layers, downloaded wheels, and interpreter
+	// detection); --no-cache disables it.
+	layerCache, metaCache, wheelCache, cleanup, err := setupCaches(f)
 	if err != nil {
 		return err
 	}
-	if f.cacheDir != "" {
-		layerCache, err = cache.New(f.cacheDir)
-		if err != nil {
-			return err
-		}
-	}
-	// A small metadata cache (default per-user) remembers per-base interpreter
-	// detection so repeat builds don't re-download the base layer holding
-	// apko.json. Best-effort: a failure here just disables the cache.
-	var metaCache *cache.Cache
-	if dir, derr := metaCacheDir(f); derr == nil {
-		metaCache, _ = cache.New(dir)
-	}
+	defer cleanup()
 
 	// Build one image per target platform. With more than one platform we
 	// assemble them into a multi-arch OCI image index; with zero or one we push
