@@ -182,11 +182,20 @@ func srcModuleDir(root, pkg string) bool {
 	return err == nil && st.IsDir()
 }
 
-// DefaultWheelCacheDir returns the on-disk wheel download cache location.
-func DefaultWheelCacheDir() (string, error) {
+// DefaultCacheDir returns pymage's per-user cache root.
+func DefaultCacheDir() (string, error) {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "pymage", "wheels"), nil
+	return filepath.Join(dir, "pymage"), nil
+}
+
+// DefaultWheelCacheDir returns the on-disk wheel download cache location.
+func DefaultWheelCacheDir() (string, error) {
+	dir, err := DefaultCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "wheels"), nil
 }

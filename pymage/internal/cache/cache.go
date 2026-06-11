@@ -50,6 +50,44 @@ func (c *Cache) Get(key string) (v1.Layer, bool) {
 	return l, true
 }
 
+// metaPath returns the on-disk path for a small text value keyed by key.
+func (c *Cache) metaPath(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return filepath.Join(c.dir, "meta", hex.EncodeToString(sum[:])+".txt")
+}
+
+// GetText returns a small cached text value for key (e.g. a detected base
+// interpreter version), or ("", false) on a miss.
+func (c *Cache) GetText(key string) (string, bool) {
+	data, err := os.ReadFile(c.metaPath(key))
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
+}
+
+// PutText stores a small text value for key.
+func (c *Cache) PutText(key, val string) error {
+	p := c.metaPath(key)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.WriteString(val); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, p)
+}
+
 // Put stores the layer's compressed blob under key. Writes are atomic (temp
 // file + rename) so concurrent builders and interrupted writes are safe.
 func (c *Cache) Put(key string, l v1.Layer) error {

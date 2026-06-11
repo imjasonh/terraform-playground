@@ -157,13 +157,17 @@ func runBuild(cmd *cobra.Command, f *buildFlags) error {
 		nameOpts = append(nameOpts, name.Insecure)
 	}
 
+	// Resolve the base once (single index/manifest fetch) and reuse it for every
+	// platform, rather than re-fetching it per platform.
+	baseSet, err := build.ResolveBaseSet(ctx, f.base, authn.DefaultKeychain, nameOpts...)
+	if err != nil {
+		return err
+	}
+
 	// With no platform requested, default to whatever the base image supports
 	// (a multi-arch base yields a multi-arch build).
 	if len(platforms) == 0 {
-		platforms, err = defaultPlatformsFromBase(ctx, f, nameOpts)
-		if err != nil {
-			return err
-		}
+		platforms = baseSet.Platforms()
 	}
 
 	var layerCache *cache.Cache
@@ -176,6 +180,13 @@ func runBuild(cmd *cobra.Command, f *buildFlags) error {
 		if err != nil {
 			return err
 		}
+	}
+	// A small metadata cache (default per-user) remembers per-base interpreter
+	// detection so repeat builds don't re-download the base layer holding
+	// apko.json. Best-effort: a failure here just disables the cache.
+	var metaCache *cache.Cache
+	if dir, derr := metaCacheDir(f); derr == nil {
+		metaCache, _ = cache.New(dir)
 	}
 
 	// Build one image per target platform. With more than one platform we
@@ -193,7 +204,11 @@ func runBuild(cmd *cobra.Command, f *buildFlags) error {
 		if p.OS != "" || p.Architecture != "" {
 			pp = &targets[i]
 		}
-		img, deps, err := buildOne(ctx, f, reqs, pp, labels, layerCache, wheelCache, nameOpts)
+		base, err := baseSet.Image(pp)
+		if err != nil {
+			return err
+		}
+		img, deps, err := buildOne(ctx, f, reqs, pp, base, labels, layerCache, metaCache, wheelCache)
 		if err != nil {
 			return err
 		}
@@ -223,17 +238,12 @@ func runBuild(cmd *cobra.Command, f *buildFlags) error {
 	return output(cmd, f, nameOpts, images[0], nil)
 }
 
-// buildOne resolves the base and wheels for a single platform and builds the
-// image, returning the resolved wheels for SBOM aggregation.
-func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platform *v1.Platform, labels map[string]string, layerCache *cache.Cache, wheelCache string, nameOpts []name.Option) (v1.Image, []wheelhouse.ResolvedWheel, error) {
-	base, err := resolveBase(ctx, f.base, platform, nameOpts...)
-	if err != nil {
-		return nil, nil, err
-	}
-
+// buildOne resolves wheels for a single platform and builds the image from the
+// already-resolved base, returning the resolved wheels for SBOM aggregation.
+func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platform *v1.Platform, base v1.Image, labels map[string]string, layerCache, metaCache *cache.Cache, wheelCache string) (v1.Image, []wheelhouse.ResolvedWheel, error) {
 	// Determine the interpreter: honor --python (validated against the base) or
 	// auto-detect it from the base image.
-	major, minor, pyTag, err := resolveInterpreter(f, base)
+	major, minor, pyTag, err := resolveInterpreter(f, base, metaCache)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -272,8 +282,8 @@ func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platf
 // directory tag. If --python is set it is authoritative but must match the
 // base when the base advertises a version; otherwise the version is detected
 // from the base image.
-func resolveInterpreter(f *buildFlags, base v1.Image) (major, minor int, pyTag string, err error) {
-	baseMaj, baseMin, baseOK := build.InterpreterVersion(base)
+func resolveInterpreter(f *buildFlags, base v1.Image, metaCache *cache.Cache) (major, minor int, pyTag string, err error) {
+	baseMaj, baseMin, baseOK := cachedInterpreter(base, metaCache)
 
 	if f.pythonTag != "" {
 		maj, min, err := parsePythonTag(f.pythonTag)
@@ -386,14 +396,39 @@ func writeLayout(dir string, img v1.Image, idx v1.ImageIndex) error {
 	return p.AppendImage(img)
 }
 
-// defaultPlatformsFromBase returns the platforms to build for when --platform
-// is not given: those advertised by the base image. A scratch base has no
-// registry metadata, so it falls back to a single registry-default build.
-func defaultPlatformsFromBase(ctx context.Context, f *buildFlags, nameOpts []name.Option) ([]v1.Platform, error) {
-	if f.base == "scratch" {
-		return []v1.Platform{{}}, nil
+// cachedInterpreter returns the base image's Python version, consulting the
+// metadata cache (keyed by base digest) so the apko.json layer isn't
+// re-downloaded on repeat builds.
+func cachedInterpreter(base v1.Image, metaCache *cache.Cache) (major, minor int, ok bool) {
+	if metaCache != nil {
+		if d, err := base.Digest(); err == nil {
+			key := "interp:v1:" + d.String()
+			if v, hit := metaCache.GetText(key); hit {
+				if maj, min, parsed := splitMajorMinor(v); parsed {
+					return maj, min, true
+				}
+			}
+			maj, min, found := build.InterpreterVersion(base)
+			if found {
+				_ = metaCache.PutText(key, fmt.Sprintf("%d.%d", maj, min))
+			}
+			return maj, min, found
+		}
 	}
-	return build.BasePlatforms(ctx, f.base, authn.DefaultKeychain, nameOpts...)
+	return build.InterpreterVersion(base)
+}
+
+func splitMajorMinor(s string) (int, int, bool) {
+	a, b, ok := strings.Cut(strings.TrimSpace(s), ".")
+	if !ok {
+		return 0, 0, false
+	}
+	maj, e1 := strconv.Atoi(a)
+	min, e2 := strconv.Atoi(b)
+	if e1 != nil || e2 != nil {
+		return 0, 0, false
+	}
+	return maj, min, true
 }
 
 // pushConcurrency resolves the number of concurrent layer uploads. 0 means
@@ -480,13 +515,6 @@ func parsePythonTag(tag string) (int, int, error) {
 		return 0, 0, fmt.Errorf("--python %q: bad minor version", tag)
 	}
 	return maj, min, nil
-}
-
-func resolveBase(ctx context.Context, ref string, platform *v1.Platform, nameOpts ...name.Option) (v1.Image, error) {
-	if ref == "scratch" {
-		return empty.Image, nil
-	}
-	return build.Base(ctx, ref, platform, authn.DefaultKeychain, nameOpts...)
 }
 
 func keyValues(in []string) (map[string]string, error) {

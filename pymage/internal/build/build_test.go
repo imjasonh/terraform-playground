@@ -5,10 +5,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -25,10 +27,21 @@ import (
 	"github.com/imjasonh/terraform-playground/pymage/internal/wheelhouse"
 )
 
-func TestBasePlatforms(t *testing.T) {
-	s := httptest.NewServer(registry.New())
-	t.Cleanup(s.Close)
-	host := strings.TrimPrefix(s.URL, "http://")
+func TestBaseSet(t *testing.T) {
+	// Count GETs of the index manifest by tag to prove it's fetched only once.
+	var mu sync.Mutex
+	indexGets := 0
+	reg := registry.New()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v2/multi/manifests/latest" {
+			mu.Lock()
+			indexGets++
+			mu.Unlock()
+		}
+		reg.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	host := strings.TrimPrefix(srv.URL, "http://")
 	ctx := context.Background()
 
 	mk := func(os, arch string) v1.Image {
@@ -39,8 +52,7 @@ func TestBasePlatforms(t *testing.T) {
 		return img
 	}
 
-	// A multi-arch index with an attestation-style "unknown" entry that must be
-	// ignored.
+	// A multi-arch index with an attestation-style "unknown" entry to ignore.
 	idx := mutate.AppendManifests(empty.Index,
 		mutate.IndexAddendum{Add: mk("linux", "amd64"), Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "amd64"}}},
 		mutate.IndexAddendum{Add: mk("linux", "arm64"), Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "arm64"}}},
@@ -51,29 +63,50 @@ func TestBasePlatforms(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plats, err := BasePlatforms(ctx, host+"/multi:latest", nil)
+	bs, err := ResolveBaseSet(ctx, host+"/multi:latest", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]bool{}
-	for _, p := range plats {
+	for _, p := range bs.Platforms() {
 		got[p.OS+"/"+p.Architecture] = true
 	}
-	if len(plats) != 2 || !got["linux/amd64"] || !got["linux/arm64"] {
-		t.Fatalf("index platforms = %v, want linux/amd64 + linux/arm64 (no unknown)", plats)
+	if len(bs.Platforms()) != 2 || !got["linux/amd64"] || !got["linux/arm64"] {
+		t.Fatalf("platforms = %v, want linux/amd64 + linux/arm64 (no unknown)", bs.Platforms())
 	}
 
-	// A plain single-arch image returns its one platform.
+	// Fetching each platform's image works and does not re-fetch the index.
+	for _, arch := range []string{"amd64", "arm64", "amd64" /* memoized */} {
+		img, err := bs.Image(&v1.Platform{OS: "linux", Architecture: arch})
+		if err != nil {
+			t.Fatalf("Image(%s): %v", arch, err)
+		}
+		cf, err := img.ConfigFile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cf.Architecture != arch {
+			t.Fatalf("got arch %q, want %q", cf.Architecture, arch)
+		}
+	}
+	mu.Lock()
+	n := indexGets
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("index manifest fetched %d times, want 1 (should be resolved once)", n)
+	}
+
+	// A plain single-arch image yields its one platform.
 	imgRef, _ := name.ParseReference(host + "/single:latest")
 	if err := remote.Write(imgRef, mk("linux", "arm64"), remote.WithContext(ctx)); err != nil {
 		t.Fatal(err)
 	}
-	plats, err = BasePlatforms(ctx, host+"/single:latest", nil)
+	bs2, err := ResolveBaseSet(ctx, host+"/single:latest", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plats) != 1 || plats[0].OS != "linux" || plats[0].Architecture != "arm64" {
-		t.Fatalf("single platforms = %v, want [linux/arm64]", plats)
+	if ps := bs2.Platforms(); len(ps) != 1 || ps[0].Architecture != "arm64" {
+		t.Fatalf("single platforms = %v, want [linux/arm64]", ps)
 	}
 }
 

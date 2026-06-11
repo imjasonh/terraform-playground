@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -16,7 +18,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
+	"github.com/imjasonh/terraform-playground/pymage/internal/cache"
 	"github.com/imjasonh/terraform-playground/pymage/internal/testwheel"
 )
 
@@ -494,6 +498,69 @@ func TestSrcLayoutPythonPathFollowsWorkdir(t *testing.T) {
 	}
 }
 
+// apkoBase builds an in-memory base image whose top layer holds /etc/apko.json
+// (and which advertises no PYTHON_VERSION), like a Chainguard image.
+func apkoBase(t *testing.T, arch, apkoJSON string) v1.Image {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "etc/apko.json", Mode: 0o644, Size: int64(len(apkoJSON)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(apkoJSON)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw := buf.Bytes()
+	layer, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(raw)), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := mutate.ConfigFile(empty.Image, &v1.ConfigFile{OS: "linux", Architecture: arch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err = mutate.AppendLayers(img, layer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
+}
+
+// TestCachedInterpreter verifies the metadata cache is written on first detect
+// and consulted (short-circuiting apko detection) on subsequent calls.
+func TestCachedInterpreter(t *testing.T) {
+	base := apkoBase(t, "amd64", `{"contents":{"packages":["python-3.14=3.14.5-r2"]}}`)
+	mc, err := cache.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First call detects from apko.json and populates the cache.
+	maj, min, ok := cachedInterpreter(base, mc)
+	if !ok || maj != 3 || min != 14 {
+		t.Fatalf("detect: %d.%d ok=%v, want 3.14", maj, min, ok)
+	}
+	d, _ := base.Digest()
+	key := "interp:v1:" + d.String()
+	if v, hit := mc.GetText(key); !hit || v != "3.14" {
+		t.Fatalf("cache after detect = %q,%v; want 3.14,true", v, hit)
+	}
+
+	// A cache hit short-circuits detection: seed a different value and confirm
+	// it's returned instead of re-reading apko.json (which says 3.14).
+	if err := mc.PutText(key, "3.11"); err != nil {
+		t.Fatal(err)
+	}
+	if maj, min, ok := cachedInterpreter(base, mc); !ok || maj != 3 || min != 11 {
+		t.Fatalf("cache hit: %d.%d ok=%v, want 3.11 (from cache)", maj, min, ok)
+	}
+}
+
 func TestPushConcurrency(t *testing.T) {
 	if got := pushConcurrency(7); got != 7 {
 		t.Errorf("explicit value not honored: got %d, want 7", got)
@@ -539,28 +606,28 @@ func TestResolveInterpreter(t *testing.T) {
 	bareBase := withVersion(nil)
 
 	// Auto-detect when --python is omitted.
-	maj, min, tag, err := resolveInterpreter(&buildFlags{}, base313)
+	maj, min, tag, err := resolveInterpreter(&buildFlags{}, base313, nil)
 	if err != nil || maj != 3 || min != 13 || tag != "python3.13" {
 		t.Fatalf("auto-detect: %d.%d %q err=%v", maj, min, tag, err)
 	}
 
 	// Explicit --python that matches is accepted.
-	if _, _, tag, err := resolveInterpreter(&buildFlags{pythonTag: "python3.13"}, base313); err != nil || tag != "python3.13" {
+	if _, _, tag, err := resolveInterpreter(&buildFlags{pythonTag: "python3.13"}, base313, nil); err != nil || tag != "python3.13" {
 		t.Fatalf("matching --python: %q err=%v", tag, err)
 	}
 
 	// Explicit --python that mismatches the base is rejected.
-	if _, _, _, err := resolveInterpreter(&buildFlags{pythonTag: "python3.12"}, base313); err == nil {
+	if _, _, _, err := resolveInterpreter(&buildFlags{pythonTag: "python3.12"}, base313, nil); err == nil {
 		t.Fatal("expected mismatch error")
 	}
 
 	// No --python and an undetectable base is an error.
-	if _, _, _, err := resolveInterpreter(&buildFlags{}, bareBase); err == nil {
+	if _, _, _, err := resolveInterpreter(&buildFlags{}, bareBase, nil); err == nil {
 		t.Fatal("expected error when base version is unknown and --python is unset")
 	}
 
 	// Explicit --python works even when the base can't be validated.
-	if _, _, tag, err := resolveInterpreter(&buildFlags{pythonTag: "python3.10"}, bareBase); err != nil || tag != "python3.10" {
+	if _, _, tag, err := resolveInterpreter(&buildFlags{pythonTag: "python3.10"}, bareBase, nil); err != nil || tag != "python3.10" {
 		t.Fatalf("explicit on bare base: %q err=%v", tag, err)
 	}
 }

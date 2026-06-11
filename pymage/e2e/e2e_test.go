@@ -156,16 +156,9 @@ func layerDigests(t *testing.T, img v1.Image) []string {
 // TestE2EReproducibleAndNoBytesRebuild is the core demonstration.
 func TestE2EReproducibleAndNoBytesRebuild(t *testing.T) {
 	host, counter := startRegistry(t)
-	ctx := context.Background()
 
-	// Push an (empty) base image and resolve it back by reference, exercising
-	// the docker-less base-by-reference path.
-	baseRef := host + "/base:latest"
-	push(t, baseRef, empty.Image)
-	base, err := build.Base(ctx, baseRef, nil, nil)
-	if err != nil {
-		t.Fatalf("resolve base: %v", err)
-	}
+	// An empty base keeps the focus on dependency/app layers.
+	base := empty.Image
 
 	dir := t.TempDir()
 	a := mkWheel(t, dir, "alpha", "1.0")

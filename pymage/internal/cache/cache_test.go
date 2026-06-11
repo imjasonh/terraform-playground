@@ -6,6 +6,22 @@ import (
 	"github.com/imjasonh/terraform-playground/pymage/internal/ptar"
 )
 
+func TestTextRoundTrip(t *testing.T) {
+	c, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.GetText("k"); ok {
+		t.Fatal("expected miss before PutText")
+	}
+	if err := c.PutText("k", "3.14"); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := c.GetText("k"); !ok || v != "3.14" {
+		t.Fatalf("GetText = %q,%v; want 3.14,true", v, ok)
+	}
+}
+
 func TestPutGetRoundTrip(t *testing.T) {
 	c, err := New(t.TempDir())
 	if err != nil {

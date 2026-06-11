@@ -13,33 +13,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
-
-// Base resolves a base image reference to a v1.Image for the given platform.
-// Only the base manifest and config are fetched; its layer blobs are referenced
-// by digest and never downloaded.
-func Base(ctx context.Context, ref string, platform *v1.Platform, kc authn.Keychain, nameOpts ...name.Option) (v1.Image, error) {
-	r, err := name.ParseReference(ref, nameOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("build: parse base ref %q: %w", ref, err)
-	}
-	if kc == nil {
-		kc = authn.DefaultKeychain
-	}
-	opts := []remote.Option{
-		remote.WithContext(ctx),
-		remote.WithAuthFromKeychain(kc),
-	}
-	if platform != nil {
-		opts = append(opts, remote.WithPlatform(*platform))
-	}
-	img, err := remote.Image(r, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("build: fetch base %q: %w", ref, err)
-	}
-	return img, nil
-}
 
 // apkoMaxBytes caps how much of the apko.json file we read.
 const apkoMaxBytes = 4 << 20
@@ -48,11 +24,30 @@ const apkoMaxBytes = 4 << 20
 // "-base" suffix), as found in a Chainguard/Wolfi image's apko.json.
 var pythonPkgRE = regexp.MustCompile(`^python-(\d+)\.(\d+)(?:-base)?$`)
 
-// BasePlatforms returns the platforms a base reference supports: the entries of
-// its image index (minus attestation/"unknown" placeholders), or the single
-// platform from a plain image's config. It is used to default the build's
-// target platforms to whatever the base provides.
-func BasePlatforms(ctx context.Context, ref string, kc authn.Keychain, nameOpts ...name.Option) ([]v1.Platform, error) {
+// BaseSet is a base image reference resolved once and reused across platforms.
+// It fetches the base index/manifest a single time, then serves per-platform
+// child images on demand (memoized), avoiding the redundant index re-fetch that
+// a separate remote.Image call per platform would incur.
+type BaseSet struct {
+	ref       string
+	img       v1.Image      // set for a single-platform base (or scratch)
+	idx       v1.ImageIndex // set for a multi-platform base
+	platforms []v1.Platform
+	children  map[string]v1.Image
+}
+
+// ResolveBaseSet fetches ref once and returns a BaseSet. "scratch" resolves to
+// an empty base with a single (registry-default) platform and no network I/O.
+func ResolveBaseSet(ctx context.Context, ref string, kc authn.Keychain, nameOpts ...name.Option) (*BaseSet, error) {
+	if ref == "scratch" {
+		return &BaseSet{
+			ref:       ref,
+			img:       empty.Image,
+			platforms: []v1.Platform{{}},
+			children:  map[string]v1.Image{},
+		}, nil
+	}
+
 	r, err := name.ParseReference(ref, nameOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("build: parse base ref %q: %w", ref, err)
@@ -65,6 +60,7 @@ func BasePlatforms(ctx context.Context, ref string, kc authn.Keychain, nameOpts 
 		return nil, fmt.Errorf("build: inspect base %q: %w", ref, err)
 	}
 
+	bs := &BaseSet{ref: ref, children: map[string]v1.Image{}}
 	if desc.MediaType.IsIndex() {
 		idx, err := desc.ImageIndex()
 		if err != nil {
@@ -74,7 +70,7 @@ func BasePlatforms(ctx context.Context, ref string, kc authn.Keychain, nameOpts 
 		if err != nil {
 			return nil, err
 		}
-		var plats []v1.Platform
+		bs.idx = idx
 		seen := map[string]bool{}
 		for _, m := range im.Manifests {
 			p := m.Platform
@@ -85,17 +81,17 @@ func BasePlatforms(ctx context.Context, ref string, kc authn.Keychain, nameOpts 
 			if p.OS == "unknown" || p.Architecture == "unknown" {
 				continue
 			}
-			key := p.OS + "/" + p.Architecture + "/" + p.Variant
+			key := platformKey(p)
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			plats = append(plats, v1.Platform{OS: p.OS, Architecture: p.Architecture, Variant: p.Variant})
+			bs.platforms = append(bs.platforms, v1.Platform{OS: p.OS, Architecture: p.Architecture, Variant: p.Variant})
 		}
-		if len(plats) == 0 {
+		if len(bs.platforms) == 0 {
 			return nil, fmt.Errorf("build: base index %q advertises no usable platforms", ref)
 		}
-		return plats, nil
+		return bs, nil
 	}
 
 	img, err := desc.Image()
@@ -109,7 +105,55 @@ func BasePlatforms(ctx context.Context, ref string, kc authn.Keychain, nameOpts 
 	if cf.OS == "" || cf.Architecture == "" {
 		return nil, fmt.Errorf("build: base image %q has no platform in its config", ref)
 	}
-	return []v1.Platform{{OS: cf.OS, Architecture: cf.Architecture, Variant: cf.Variant}}, nil
+	bs.img = img
+	bs.platforms = []v1.Platform{{OS: cf.OS, Architecture: cf.Architecture, Variant: cf.Variant}}
+	return bs, nil
+}
+
+// Platforms returns the platforms the base supports.
+func (b *BaseSet) Platforms() []v1.Platform { return b.platforms }
+
+// Image returns the base image for the given platform (nil platform selects the
+// single available image). Child images are fetched at most once.
+func (b *BaseSet) Image(platform *v1.Platform) (v1.Image, error) {
+	if b.img != nil {
+		return b.img, nil
+	}
+	want := &v1.Platform{}
+	if platform != nil {
+		want = platform
+	}
+	key := platformKey(want)
+	if img, ok := b.children[key]; ok {
+		return img, nil
+	}
+
+	im, err := b.idx.IndexManifest()
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range im.Manifests {
+		if m.Platform == nil {
+			continue
+		}
+		if m.Platform.OS == want.OS && m.Platform.Architecture == want.Architecture &&
+			(want.Variant == "" || m.Platform.Variant == want.Variant) {
+			img, err := b.idx.Image(m.Digest)
+			if err != nil {
+				return nil, err
+			}
+			b.children[key] = img
+			return img, nil
+		}
+	}
+	return nil, fmt.Errorf("build: base %q has no image for platform %s", b.ref, key)
+}
+
+func platformKey(p *v1.Platform) string {
+	if p == nil {
+		return ""
+	}
+	return p.OS + "/" + p.Architecture + "/" + p.Variant
 }
 
 // InterpreterVersion reports the Python X.Y the base image provides.

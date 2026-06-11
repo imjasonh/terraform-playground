@@ -126,6 +126,15 @@ func wheelCacheDir(f *buildFlags) (string, error) {
 	return project.DefaultWheelCacheDir()
 }
 
+// metaCacheDir is where small build metadata (e.g. detected base interpreter
+// versions) is cached.
+func metaCacheDir(f *buildFlags) (string, error) {
+	if f.cacheDir != "" {
+		return f.cacheDir, nil
+	}
+	return project.DefaultCacheDir()
+}
+
 func validateBuildFlags(f *buildFlags) error {
 	if f.lockFile == "" {
 		return fmt.Errorf("no lock file found (expected uv.lock in the source directory, or pass --lock)")
