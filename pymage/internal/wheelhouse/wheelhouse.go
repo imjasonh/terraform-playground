@@ -118,20 +118,31 @@ func resolveOne(ctx context.Context, req lock.Requirement, index map[string][]ca
 				}
 				return ResolvedWheel{Name: req.Name, Version: req.Version, Path: match.path, SHA256: sum}, nil
 			}
-			if len(req.Wheels) == 0 {
+			if len(req.Wheels) == 0 && req.Sdist == nil {
 				return ResolvedWheel{}, fmt.Errorf("wheelhouse: no wheel for %s==%s is compatible with %s/%s python%d.%d (found %d incompatible candidate(s))",
 					req.Name, req.Version, target.OS, target.Arch, target.PyMajor, target.PyMinor, len(cands))
 			}
 		}
 	}
 
-	if len(req.Wheels) == 0 {
+	if len(req.Wheels) == 0 && req.Sdist == nil {
 		return ResolvedWheel{}, fmt.Errorf("wheelhouse: no wheel found for %s==%s (pass --find-links or use a uv.lock with wheel URLs)", req.Name, req.Version)
 	}
 	if cache == nil {
 		return ResolvedWheel{}, fmt.Errorf("wheelhouse: %s==%s not in local wheelhouse and no wheel cache dir configured", req.Name, req.Version)
 	}
-	return fetchRequirement(ctx, req, target, cache)
+
+	// Prefer a pre-built lock wheel; fall back to building from the sdist.
+	if len(req.Wheels) > 0 {
+		rw, err := fetchRequirement(ctx, req, target, cache)
+		if err == nil {
+			return rw, nil
+		}
+		if req.Sdist == nil {
+			return ResolvedWheel{}, err
+		}
+	}
+	return buildFromSdist(ctx, req, target, cache)
 }
 
 // pickBest chooses the most specific compatible wheel: platform-specific and
