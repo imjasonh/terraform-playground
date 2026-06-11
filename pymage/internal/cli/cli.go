@@ -459,9 +459,14 @@ func platformTarget(platform *v1.Platform) wheel.Target {
 	return t
 }
 
-// parsePythonTag parses "python3.12" into (3, 12).
+// parsePythonTag parses "python3.12" into (3, 12). The tag must start with
+// "python" because it is also used verbatim as the site-packages lib directory
+// (".../lib/python3.12/site-packages").
 func parsePythonTag(tag string) (int, int, error) {
-	s := strings.TrimPrefix(tag, "python")
+	s, ok := strings.CutPrefix(tag, "python")
+	if !ok {
+		return 0, 0, fmt.Errorf("--python %q must look like pythonX.Y", tag)
+	}
 	majStr, minStr, ok := strings.Cut(s, ".")
 	if !ok {
 		return 0, 0, fmt.Errorf("--python %q must look like pythonX.Y", tag)

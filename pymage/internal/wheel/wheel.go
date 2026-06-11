@@ -14,7 +14,6 @@ package wheel
 
 import (
 	"archive/zip"
-	"bufio"
 	"fmt"
 	"io"
 	"path"
@@ -360,9 +359,10 @@ type entryPoint struct{ module, attr string }
 func parseConsoleScripts(s string) map[string]entryPoint {
 	out := map[string]entryPoint{}
 	section := ""
-	sc := bufio.NewScanner(strings.NewReader(s))
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	// The file is already fully in memory, so split directly rather than using a
+	// bufio.Scanner (whose default token limit would silently drop long lines).
+	for _, raw := range strings.Split(s, "\n") {
+		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}

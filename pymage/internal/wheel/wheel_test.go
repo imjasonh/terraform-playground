@@ -196,6 +196,17 @@ func TestConsoleScriptExtrasStripped(t *testing.T) {
 	}
 }
 
+func TestParseConsoleScriptsLongLineNotTruncated(t *testing.T) {
+	// A comment line longer than bufio.Scanner's default 64 KiB token limit
+	// would have made a Scanner stop early and silently drop later entries.
+	longComment := "# " + strings.Repeat("x", 200*1024)
+	content := longComment + "\n[console_scripts]\ntool = pkg.mod:main\n"
+	eps := parseConsoleScripts(content)
+	if ep, ok := eps["tool"]; !ok || ep.module != "pkg.mod" || ep.attr != "main" {
+		t.Fatalf("entry after a very long line was dropped: %+v", eps)
+	}
+}
+
 func TestFilesDeterministic(t *testing.T) {
 	path := writeFixture(t)
 	digest := func() string {

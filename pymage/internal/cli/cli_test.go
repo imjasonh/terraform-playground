@@ -440,6 +440,10 @@ func TestParsePythonTag(t *testing.T) {
 	if _, _, err := parsePythonTag("python3"); err == nil {
 		t.Error("expected error for missing minor version")
 	}
+	// Must require the "python" prefix (it's also the site-packages lib dir).
+	if _, _, err := parsePythonTag("3.12"); err == nil {
+		t.Error("expected error for tag without 'python' prefix")
+	}
 }
 
 func TestPlatformTargetDefaults(t *testing.T) {
