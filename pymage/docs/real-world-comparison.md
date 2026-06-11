@@ -3,9 +3,9 @@
 This is a hands-on study of migrating real, uv-based Python projects that ship a
 `Dockerfile` to `pymage`. The goals were to (a) see how the resulting images
 differ and (b) surface gaps/bugs real projects hit. It directly drove several
-fixes — runtime-only dependency resolution, sdist→wheel building, `--extra` /
-`--package` selection, and environment-marker evaluation — plus a ranked list of
-the remaining migration blockers.
+fixes — runtime-only dependency resolution, `--extra` / `--package` selection,
+and environment-marker evaluation — plus a ranked list of the remaining
+migration blockers.
 
 ## Method & caveats
 
@@ -123,21 +123,18 @@ the worst case is one bucket rather than the whole environment.)
 
 1. **(FIXED) Installed the whole `uv.lock`, including dev groups.** Caused
    50–63% dependency bloat above. Now resolves the runtime closure.
-2. **(FIXED, opt-in) sdist-only dependencies.** `imgpush` previously failed on
-   `timeout-decorator==0.5.0`, which publishes no wheel. With `--build-sdists`
-   (or `build-sdists` in `[tool.pymage]`) pymage builds a wheel from the sdist
-   (`pip wheel --no-deps`, host `python`/`pip` required) and feeds it into the
-   existing layer path; `imgpush` then builds with 52 runtime wheels including
-   the sdist-built `timeout-decorator`. It is **off by default and intentionally
-   a power-user feature** for two reasons:
-   - **Security:** building an sdist runs the dependency's own build code on the
-     host with no container isolation (pymage has no daemon to sandbox it), so a
-     malicious dependency could get code execution on the build machine. Without
-     the flag, a wheelless package fails fast with guidance to supply a wheel via
-     `--find-links` or opt in.
-   - **Single-arch:** compiled sdists can only be built for the host platform, so
-     enabling them doesn't make a compiled package multi-arch — pure-python
-     sdists build to `py3-none-any` and remain portable.
+2. **sdist-only dependencies (by design — not built).** `imgpush` pins
+   `timeout-decorator==0.5.0`, which publishes no wheel. pymage installs
+   pre-built wheels only and **does not build sdists**: doing so would run the
+   dependency's build code on the host (RCE surface, no sandbox), be
+   non-reproducible and non-hermetic, need a build toolchain, and produce
+   host-arch-only output for compiled packages — all at odds with pymage's
+   guarantees. Instead the build fails fast and directs you to pre-build the
+   wheel out-of-band with tooling you control and pass `--find-links`:
+   `uv pip wheel timeout-decorator==0.5.0 -w ./wheelhouse` (or `pip wheel`), then
+   `pymage build --find-links ./wheelhouse …`. This is rare in practice (the
+   ecosystem is wheel-first); `timeout-decorator` was the only sdist across all
+   four projects studied.
 3. **No system/OS packages (by design — documented).** pymage installs Python
    wheels, not apt/apk packages. `imgpush` needs `libmagickwand` (for `Wand`) and
    `nginx`; those must come from the **base image**. Projects with system-library
@@ -169,9 +166,12 @@ the worst case is one bucket rather than the whole environment.)
 ## Verdict
 
 After the runtime-closure fix and this round of work, **pymage is a smaller,
-faster, reproducible alternative to a uv Dockerfile** for the projects studied:
-all three now build (including `imgpush`, via opt-in sdist building), with no daemon and
-no build tooling in the image, and incremental rebuilds re-upload only changed
-layers. The main remaining caveat is **runtime system libraries**, which must be
-provided by the base image (documented), plus the multi-platform default for
+faster, reproducible alternative to a uv Dockerfile** for wheel-based apps, with
+no daemon and no build tooling in the image, and incremental rebuilds that
+re-upload only changed layers. The FastAPI projects build directly; `imgpush`
+builds once its one sdist-only dependency (`timeout-decorator`) is pre-built into
+a `--find-links` wheelhouse, and still needs a base that ships ImageMagick at
+runtime. The remaining caveats are **runtime system libraries** (must come from
+the base image — documented), sdist-only dependencies (pre-build wheels
+out-of-band; pymage won't run build code), and the multi-platform default for
 bases that advertise many architectures (item 5).

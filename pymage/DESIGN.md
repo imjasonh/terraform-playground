@@ -25,8 +25,11 @@ because it exploits content-addressed layering:
 ### Non-goals (initially)
 
 - Compiling C extensions / building wheels from sdists. We consume **pre-built
-  wheels** only. (sdist→wheel is a future extension; it would run a build, then
-  the resulting wheel re-enters the normal layer path.)
+  wheels** only. Building an sdist would run the dependency's own build code on
+  the host — non-hermetic, non-reproducible, an RCE surface with no sandbox, and
+  host-arch-only for compiled packages — so it is intentionally out of scope.
+  When a lock has no compatible wheel, pymage fails fast and directs the user to
+  pre-build a wheel out-of-band and supply it via `--find-links`.
 - Replacing dependency *resolution*. We delegate resolution to existing,
   correct tools (`uv` / `pip`) and consume their lockfile output.
 - A general-purpose Dockerfile interpreter. This is a focused Python app builder

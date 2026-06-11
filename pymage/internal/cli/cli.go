@@ -72,7 +72,6 @@ type buildFlags struct {
 	insecure    bool
 	cacheDir    string
 	noCache     bool
-	buildSdists bool
 }
 
 func buildCmd() *cobra.Command {
@@ -120,7 +119,6 @@ func buildCmd() *cobra.Command {
 	fs.BoolVar(&f.insecure, "insecure", false, "use plain HTTP for the registry")
 	fs.StringVar(&f.cacheDir, "cache-dir", "", "cache root directory (default: per-user cache dir)")
 	fs.BoolVar(&f.noCache, "no-cache", false, "disable all build caches (layers, downloaded wheels, interpreter detection)")
-	fs.BoolVar(&f.buildSdists, "build-sdists", false, "allow building wheels from source distributions when no compatible wheel exists (runs the dependency's build code on this host; single-arch for compiled packages)")
 	return cmd
 }
 
@@ -258,7 +256,7 @@ func buildOne(ctx context.Context, f *buildFlags, lk *lock.Lock, platform *v1.Pl
 		return nil, nil, err
 	}
 
-	wheels, err := wheelhouse.ResolveContext(ctx, reqs, f.findLinks, target, wheelCache, f.buildSdists)
+	wheels, err := wheelhouse.ResolveContext(ctx, reqs, f.findLinks, target, wheelCache)
 	if err != nil {
 		return nil, nil, err
 	}

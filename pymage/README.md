@@ -73,7 +73,6 @@ the config value, which overrides the built-in default.
 | `max-wheel-layers` | `--max-wheel-layers` | *(derived from `max-layers`)* |
 | `push-concurrency` | `--push-concurrency` | auto (≥ 4, scales with CPUs) |
 | `no-cache` | `--no-cache` | `false` (caching is on by default) |
-| `build-sdists` | `--build-sdists` | `false` (sdists are opt-in; see warning below) |
 | `extras` | `--extra` (repeatable) | — (enables uv project optional-dependency groups) |
 | `package` | `--package` | — (build a single uv workspace member) |
 | `python` | `--python` | auto-detected from the base |
@@ -167,34 +166,35 @@ get from `uv sync --no-dev`), not every package in the lock:
   Windows-only or stale-Python-only packages. Markers are evaluated per platform,
   so each arch of a multi-arch build gets the correct set.
 
-### Source distributions (sdists) — opt-in
+### Source distributions (sdists)
 
-By default pymage installs **only pre-built wheels**. If the lock pins a package
-with no compatible wheel, the build fails fast and tells you to either supply a
-wheel via `--find-links` or opt into sdist building.
+pymage installs **pre-built wheels only — it does not build sdists.** This is a
+deliberate choice: building a source distribution runs the dependency's own build
+code (`setup.py` / build backend) on the build host, which would break pymage's
+core guarantees — it's not hermetic or byte-reproducible, it's a remote-code-
+execution surface with no container to sandbox it, it needs a build toolchain,
+and compiled packages can only be built for the host architecture (no multi-arch).
 
-Building from an sdist is **off by default** and must be enabled with
-`--build-sdists` (or `build-sdists = true` in `[tool.pymage]`). When enabled,
-pymage downloads the hash-verified sdist and builds a wheel with the host's `pip`
-(`pip wheel --no-deps`), which requires a Python toolchain (`python3`/`python`
-with `pip`) on the build host. It is a power-user feature with two important
-caveats:
+In practice this is rarely an issue: the modern ecosystem is wheel-first, so
+mainstream dependencies on common targets all publish wheels. You only hit an
+sdist for (a) older, low-maintenance pure-python packages that never uploaded a
+wheel, (b) compiled packages on a brand-new Python or uncommon platform before
+wheels are published, or (c) the occasional source-only package.
 
-- **Security: building an sdist runs arbitrary code from the dependency** on the
-  build host. An sdist's `setup.py` / build backend executes during the build,
-  and — unlike a `docker build` — pymage does **not** sandbox it. A malicious or
-  compromised dependency can therefore achieve code execution on your build
-  machine. Only enable this for locks you trust, ideally in an ephemeral/CI
-  environment, and prefer pre-built wheels (`--find-links`, or a registry that
-  publishes wheels) whenever possible.
-- **Architecture: compiled sdists are single-arch.** A pure-python sdist builds
-  to a `py3-none-any` wheel that works on any target. A *compiled* sdist can only
-  be built for the **host** platform, so a multi-arch build that needs to build
-  such a package will fail the compatibility check for the non-host arch. Use a
-  base/lock that provides pre-built wheels for every target arch instead.
+If the lock pins a package with no compatible wheel, the build fails fast and
+tells you exactly how to proceed: **pre-build the wheel out-of-band with your own
+(trusted, ideally isolated) tooling and point `--find-links` at it.**
 
-Built wheels are cached (keyed by the sdist hash and target) so they aren't
-rebuilt on subsequent builds.
+```
+# Build wheels once, with isolation/tooling you control:
+uv pip wheel -r requirements.txt -w ./wheelhouse   # or: pip wheel ...
+
+# Then build the image from the local wheelhouse:
+pymage build --find-links ./wheelhouse -t latest
+```
+
+This keeps the escape hatch for the rare cases while keeping pymage's builds
+hermetic, reproducible, multi-arch, and free of arbitrary build-time code.
 
 ### Base image requirements (OS / system libraries)
 
@@ -255,7 +255,6 @@ base that advertises its version.
 | `--package` | Build a single uv workspace member by name (default: union of all members). |
 | `--cache-dir` | Cache root (default: `$PYMAGE_CACHE_DIR` or the per-user cache dir). Caches compressed layers, downloaded wheels, and base interpreter detection. |
 | `--no-cache` | Disable all caching (layers, downloaded wheels, interpreter detection). |
-| `--build-sdists` | Allow building wheels from sdists when no compatible wheel exists. **Runs the dependency's build code on the host (no sandbox); single-arch for compiled packages.** Off by default. |
 | `--prefix` | install prefix / venv root (default `/app/.venv`). |
 | `--workdir` | image working dir and source destination (default `/app`). |
 | `--user` | image user, e.g. `65532`. |

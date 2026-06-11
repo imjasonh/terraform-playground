@@ -47,7 +47,7 @@ type candidate struct {
 // per-user cache directory. Results are sorted by (normalized name, version)
 // for deterministic ordering.
 func Resolve(reqs []lock.Requirement, dirs []string, target wheel.Target) ([]ResolvedWheel, error) {
-	return ResolveContext(context.Background(), reqs, dirs, target, defaultWheelCacheDir(), false)
+	return ResolveContext(context.Background(), reqs, dirs, target, defaultWheelCacheDir())
 }
 
 // defaultWheelCacheDir returns the per-user wheel download cache, or "" if the
@@ -62,10 +62,8 @@ func defaultWheelCacheDir() string {
 }
 
 // ResolveContext is Resolve with an explicit context and on-disk wheel cache
-// directory for lock-file downloads. When allowSdist is true, packages with no
-// compatible wheel may be built from their source distribution (which executes
-// the dependency's build code on this host); otherwise such packages error.
-func ResolveContext(ctx context.Context, reqs []lock.Requirement, dirs []string, target wheel.Target, wheelCacheDir string, allowSdist bool) ([]ResolvedWheel, error) {
+// directory for lock-file downloads.
+func ResolveContext(ctx context.Context, reqs []lock.Requirement, dirs []string, target wheel.Target, wheelCacheDir string) ([]ResolvedWheel, error) {
 	var index map[string][]candidate
 	if len(dirs) > 0 {
 		var err error
@@ -82,7 +80,7 @@ func ResolveContext(ctx context.Context, reqs []lock.Requirement, dirs []string,
 
 	out := make([]ResolvedWheel, 0, len(reqs))
 	for _, req := range reqs {
-		rw, err := resolveOne(ctx, req, index, target, cache, allowSdist)
+		rw, err := resolveOne(ctx, req, index, target, cache)
 		if err != nil {
 			return nil, err
 		}
@@ -99,7 +97,7 @@ func ResolveContext(ctx context.Context, reqs []lock.Requirement, dirs []string,
 	return out, nil
 }
 
-func resolveOne(ctx context.Context, req lock.Requirement, index map[string][]candidate, target wheel.Target, cache *wheelCache, allowSdist bool) (ResolvedWheel, error) {
+func resolveOne(ctx context.Context, req lock.Requirement, index map[string][]candidate, target wheel.Target, cache *wheelCache) (ResolvedWheel, error) {
 	key := lock.NormalizeName(req.Name) + "\x00" + req.Version
 	if index != nil {
 		if cands := index[key]; len(cands) > 0 {
@@ -127,32 +125,33 @@ func resolveOne(ctx context.Context, req lock.Requirement, index map[string][]ca
 		}
 	}
 
-	if len(req.Wheels) == 0 && req.Sdist == nil {
+	if len(req.Wheels) == 0 {
+		if req.Sdist != nil {
+			// Distributed only as an sdist (no wheel anywhere). pymage installs
+			// pre-built wheels only; see errSdistOnly.
+			return ResolvedWheel{}, errSdistOnly(req, target)
+		}
 		return ResolvedWheel{}, fmt.Errorf("wheelhouse: no wheel found for %s==%s (pass --find-links or use a uv.lock with wheel URLs)", req.Name, req.Version)
 	}
 	if cache == nil {
 		return ResolvedWheel{}, fmt.Errorf("wheelhouse: %s==%s not in local wheelhouse and no wheel cache dir configured", req.Name, req.Version)
 	}
 
-	// Prefer a pre-built lock wheel; fall back to building from the sdist.
-	if len(req.Wheels) > 0 {
-		rw, err := fetchRequirement(ctx, req, target, cache)
-		if err == nil {
-			return rw, nil
-		}
-		if req.Sdist == nil {
-			return ResolvedWheel{}, err
-		}
-		// No compatible lock wheel; consider building from the sdist below.
+	rw, err := fetchRequirement(ctx, req, target, cache)
+	if err == nil {
+		return rw, nil
 	}
+	if req.Sdist == nil {
+		return ResolvedWheel{}, err
+	}
+	// The lock has wheels but none compatible with this target, and the only
+	// other artifact is an sdist, which pymage does not build.
+	return ResolvedWheel{}, errSdistOnly(req, target)
+}
 
-	// Building from an sdist runs the dependency's own build code (setup.py /
-	// build backend) on this host with no container isolation, so it is gated
-	// behind explicit opt-in.
-	if !allowSdist {
-		return ResolvedWheel{}, fmt.Errorf("wheelhouse: %s==%s has no compatible pre-built wheel and would have to be built from its source distribution, which runs arbitrary build code from the dependency on this machine; pass --build-sdists (or set build-sdists in [tool.pymage]) to allow it, or supply a pre-built wheel via --find-links", req.Name, req.Version)
-	}
-	return buildFromSdist(ctx, req, target, cache)
+func errSdistOnly(req lock.Requirement, target wheel.Target) error {
+	return fmt.Errorf("wheelhouse: %s==%s has no compatible pre-built wheel for %s/%s python%d.%d; it is only available as a source distribution (sdist), which pymage does not build. Pre-build a wheel out-of-band (e.g. `uv pip wheel %s==%s -w ./wheelhouse` or `pip wheel %s==%s -w ./wheelhouse`) and pass --find-links ./wheelhouse",
+		req.Name, req.Version, target.OS, target.Arch, target.PyMajor, target.PyMinor, req.Name, req.Version, req.Name, req.Version)
 }
 
 // pickBest chooses the most specific compatible wheel: platform-specific and

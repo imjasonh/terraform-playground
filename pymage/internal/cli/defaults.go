@@ -75,9 +75,6 @@ func applyDefaults(cmd *cobra.Command, f *buildFlags) error {
 	if !changed("package") && cfg.Package != "" {
 		f.pkg = cfg.Package
 	}
-	if !changed("build-sdists") && cfg.BuildSdists {
-		f.buildSdists = true
-	}
 	if !changed("python") && cfg.Python != "" {
 		f.pythonTag = cfg.Python
 	}
