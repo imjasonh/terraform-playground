@@ -69,6 +69,12 @@ func applyDefaults(cmd *cobra.Command, f *buildFlags) error {
 	if !changed("no-cache") && cfg.NoCache {
 		f.noCache = true
 	}
+	if !changed("extra") && len(cfg.Extras) > 0 {
+		f.extras = cfg.Extras
+	}
+	if !changed("package") && cfg.Package != "" {
+		f.pkg = cfg.Package
+	}
 	if !changed("python") && cfg.Python != "" {
 		f.pythonTag = cfg.Python
 	}

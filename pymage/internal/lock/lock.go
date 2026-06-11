@@ -24,6 +24,14 @@ type WheelRef struct {
 	Filename string // wheel file name, used for tag parsing
 }
 
+// SdistRef is a pinned source distribution, used to build a wheel when no
+// pre-built wheel is available.
+type SdistRef struct {
+	URL      string
+	SHA256   string // hex digest, no "sha256:" prefix
+	Filename string
+}
+
 // Requirement is a single pinned distribution.
 type Requirement struct {
 	// Name is the project name as written (normalize with NormalizeName for
@@ -35,6 +43,9 @@ type Requirement struct {
 	Hashes []string
 	// Wheels lists known wheel artifacts for this pin (populated from uv.lock).
 	Wheels []WheelRef
+	// Sdist, when set, is the source distribution to build a wheel from if no
+	// compatible wheel is available.
+	Sdist *SdistRef
 }
 
 var (
@@ -79,6 +90,54 @@ func ParseAny(path string) ([]Requirement, error) {
 	}
 	// requirements.lock and requirements.txt both use the pip format.
 	return ParseFile(path)
+}
+
+// Lock is a parsed lock file (parsed once) that can be resolved per target.
+type Lock struct {
+	isUV bool
+	uv   *uvLockFile   // uv.lock
+	reqs []Requirement // requirements format
+}
+
+// Options selects the resolution for a uv.lock: a workspace package, extras to
+// enable, and the target environment for marker evaluation. They are ignored
+// for requirements-format locks (which are already flat and pinned).
+type Options struct {
+	Package          string
+	Extras           []string
+	OS, Arch         string
+	PyMajor, PyMinor int
+}
+
+// Load reads and parses a lock file once. uv.lock is parsed as TOML; everything
+// else is treated as a requirements file.
+func Load(path string) (*Lock, error) {
+	if strings.EqualFold(filepath.Base(path), "uv.lock") {
+		lf, err := parseUVLock(path)
+		if err != nil {
+			return nil, err
+		}
+		return &Lock{isUV: true, uv: lf}, nil
+	}
+	reqs, err := ParseFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return &Lock{reqs: reqs}, nil
+}
+
+// Resolve returns the pinned requirements for the given target. For uv.lock
+// this is the runtime closure (extras/package/markers applied); for a
+// requirements file it is the flat pinned list.
+func (l *Lock) Resolve(o Options) ([]Requirement, error) {
+	if !l.isUV {
+		return append([]Requirement(nil), l.reqs...), nil
+	}
+	var env MarkerEnv
+	if o.PyMajor != 0 {
+		env = NewMarkerEnv(o.OS, o.Arch, o.PyMajor, o.PyMinor)
+	}
+	return resolveUV(l.uv, UVOptions{Package: o.Package, Extras: o.Extras, Env: env})
 }
 
 // DiscoverLock returns the path to a lock file in dir, preferring uv.lock.
@@ -187,7 +246,7 @@ func Validate(reqs []Requirement, requireHashes bool) error {
 		if r.Version == "" {
 			return fmt.Errorf("lock: requirement %q is not pinned with ==", r.Name)
 		}
-		if requireHashes && len(r.Hashes) == 0 {
+		if requireHashes && len(r.Hashes) == 0 && r.Sdist == nil {
 			return fmt.Errorf("lock: requirement %q has no --hash entries", r.Name)
 		}
 	}

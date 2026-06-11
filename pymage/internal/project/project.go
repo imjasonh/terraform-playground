@@ -46,6 +46,8 @@ type Config struct {
 	Labels         map[string]string `toml:"labels"`
 	FindLinks      []string          `toml:"find-links"`
 	NoCache        bool              `toml:"no-cache"`
+	Extras         []string          `toml:"extras"`
+	Package        string            `toml:"package"`
 }
 
 const defaultBase = "cgr.dev/chainguard/python:latest"

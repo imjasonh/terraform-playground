@@ -47,6 +47,8 @@ type buildFlags struct {
 	repo       string
 	tags       []string
 	platforms  []string
+	extras     []string
+	pkg        string
 	pythonTag  string
 	prefix     string
 	workingDir string
@@ -90,6 +92,8 @@ func buildCmd() *cobra.Command {
 	fs := cmd.Flags()
 	fs.StringVar(&f.base, "base", "", "base image reference (default: cgr.dev/chainguard/python:latest)")
 	fs.StringVar(&f.lockFile, "lock", "", "lock file (default: uv.lock in the source directory)")
+	fs.StringArrayVar(&f.extras, "extra", nil, "enable a project optional-dependency group from uv.lock (repeatable)")
+	fs.StringVar(&f.pkg, "package", "", "build a single uv workspace member (by name)")
 	fs.StringArrayVar(&f.findLinks, "find-links", nil, "local wheel directory (optional; wheels are downloaded from the lock when omitted)")
 	fs.StringVar(&f.repo, "repo", "", "destination repository, pushed by digest, e.g. gcr.io/foo/bar (default: [tool.pymage] repo)")
 	fs.StringArrayVarP(&f.tags, "tag", "t", nil, "tag(s) to apply at --repo; tag component only, not a full reference (repeatable; default: [tool.pymage] tags or 'latest')")
@@ -141,11 +145,8 @@ func runBuild(cmd *cobra.Command, f *buildFlags) error {
 		return fmt.Errorf("--label: %w", err)
 	}
 
-	reqs, err := lock.ParseAny(f.lockFile)
+	lk, err := lock.Load(f.lockFile)
 	if err != nil {
-		return err
-	}
-	if err := lock.Validate(reqs, f.requireHash); err != nil {
 		return err
 	}
 
@@ -199,7 +200,7 @@ func runBuild(cmd *cobra.Command, f *buildFlags) error {
 		if err != nil {
 			return err
 		}
-		img, deps, err := buildOne(ctx, f, reqs, pp, base, labels, layerCache, metaCache, wheelCache)
+		img, deps, err := buildOne(ctx, f, lk, pp, base, labels, layerCache, metaCache, wheelCache)
 		if err != nil {
 			return err
 		}
@@ -231,7 +232,7 @@ func runBuild(cmd *cobra.Command, f *buildFlags) error {
 
 // buildOne resolves wheels for a single platform and builds the image from the
 // already-resolved base, returning the resolved wheels for SBOM aggregation.
-func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platform *v1.Platform, base v1.Image, labels map[string]string, layerCache, metaCache *cache.Cache, wheelCache string) (v1.Image, []wheelhouse.ResolvedWheel, error) {
+func buildOne(ctx context.Context, f *buildFlags, lk *lock.Lock, platform *v1.Platform, base v1.Image, labels map[string]string, layerCache, metaCache *cache.Cache, wheelCache string) (v1.Image, []wheelhouse.ResolvedWheel, error) {
 	// Determine the interpreter: honor --python (validated against the base) or
 	// auto-detect it from the base image.
 	major, minor, pyTag, err := resolveInterpreter(f, base, metaCache)
@@ -241,6 +242,19 @@ func buildOne(ctx context.Context, f *buildFlags, reqs []lock.Requirement, platf
 
 	target := platformTarget(platform)
 	target.PyMajor, target.PyMinor = major, minor
+
+	// Resolve the lock for this target (uv.lock runtime closure honors
+	// --package, --extra, and the target's environment markers).
+	reqs, err := lk.Resolve(lock.Options{
+		Package: f.pkg, Extras: f.extras,
+		OS: target.OS, Arch: target.Arch, PyMajor: target.PyMajor, PyMinor: target.PyMinor,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := lock.Validate(reqs, f.requireHash); err != nil {
+		return nil, nil, err
+	}
 
 	wheels, err := wheelhouse.ResolveContext(ctx, reqs, f.findLinks, target, wheelCache)
 	if err != nil {

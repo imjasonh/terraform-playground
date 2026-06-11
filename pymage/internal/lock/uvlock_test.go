@@ -134,6 +134,135 @@ func TestParseAnyPrefersUVLock(t *testing.T) {
 	}
 }
 
+func names(reqs []Requirement) map[string]bool {
+	m := map[string]bool{}
+	for _, r := range reqs {
+		m[NormalizeName(r.Name)] = true
+	}
+	return m
+}
+
+// closureLock exercises extras, workspace --package selection, and markers.
+const closureLock = `version = 1
+
+[[package]]
+name = "svc"
+version = "0.1.0"
+source = { editable = "members/svc" }
+dependencies = [
+    { name = "core" },
+    { name = "winonly", marker = "sys_platform == 'win32'" },
+]
+
+[package.optional-dependencies]
+gpu = [
+    { name = "accel" },
+]
+
+[[package]]
+name = "worker"
+version = "0.1.0"
+source = { editable = "members/worker" }
+dependencies = [
+    { name = "worktool" },
+]
+
+[[package]]
+name = "core"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [ { url = "https://e/core-1.0.0-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" } ]
+
+[[package]]
+name = "accel"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [ { url = "https://e/accel-1.0.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222" } ]
+
+[[package]]
+name = "winonly"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [ { url = "https://e/winonly-1.0.0-py3-none-any.whl", hash = "sha256:3333333333333333333333333333333333333333333333333333333333333333" } ]
+
+[[package]]
+name = "worktool"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [ { url = "https://e/worktool-1.0.0-py3-none-any.whl", hash = "sha256:4444444444444444444444444444444444444444444444444444444444444444" } ]
+`
+
+func loadClosure(t *testing.T) *Lock {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "uv.lock")
+	if err := os.WriteFile(p, []byte(closureLock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lk, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lk
+}
+
+func TestUVClosureMarkers(t *testing.T) {
+	lk := loadClosure(t)
+	// Linux target: winonly (sys_platform == win32) is excluded.
+	reqs, err := lk.Resolve(Options{OS: "linux", Arch: "amd64", PyMajor: 3, PyMinor: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := names(reqs)
+	if !got["core"] || !got["worktool"] {
+		t.Fatalf("missing runtime deps: %v", got)
+	}
+	if got["winonly"] {
+		t.Error("winonly should be excluded on linux (marker)")
+	}
+	if got["accel"] {
+		t.Error("accel should be excluded without --extra gpu")
+	}
+}
+
+func TestUVClosureExtras(t *testing.T) {
+	lk := loadClosure(t)
+	reqs, err := lk.Resolve(Options{Extras: []string{"gpu"}, OS: "linux", Arch: "amd64", PyMajor: 3, PyMinor: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !names(reqs)["accel"] {
+		t.Errorf("--extra gpu should include accel: %v", names(reqs))
+	}
+}
+
+func TestUVClosurePackage(t *testing.T) {
+	lk := loadClosure(t)
+	// --package svc: only svc's closure (core), not worker's worktool.
+	reqs, err := lk.Resolve(Options{Package: "svc", OS: "linux", Arch: "amd64", PyMajor: 3, PyMinor: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := names(reqs)
+	if !got["core"] || got["worktool"] {
+		t.Errorf("--package svc closure = %v, want {core} (no worktool)", got)
+	}
+
+	// --package worker: only worktool.
+	reqs, err = lk.Resolve(Options{Package: "worker", OS: "linux", Arch: "amd64", PyMajor: 3, PyMinor: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = names(reqs)
+	if !got["worktool"] || got["core"] {
+		t.Errorf("--package worker closure = %v, want {worktool}", got)
+	}
+
+	if _, err := lk.Resolve(Options{Package: "nope"}); err == nil {
+		t.Error("expected error for unknown --package")
+	}
+}
+
 func keys(m map[string]Requirement) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
