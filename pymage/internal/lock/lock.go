@@ -46,6 +46,9 @@ type Requirement struct {
 	// Sdist, when set, is the source distribution to build a wheel from if no
 	// compatible wheel is available.
 	Sdist *SdistRef
+	// Marker is the PEP 508 environment marker for this requirement (the text
+	// after ";"), if any. Evaluated against the target at resolution time.
+	Marker string
 }
 
 var (
@@ -95,6 +98,7 @@ func ParseAny(path string) ([]Requirement, error) {
 // Lock is a parsed lock file (parsed once) that can be resolved per target.
 type Lock struct {
 	isUV bool
+	path string        // path to the lock file on disk
 	uv   *uvLockFile   // uv.lock
 	reqs []Requirement // requirements format
 }
@@ -117,27 +121,56 @@ func Load(path string) (*Lock, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Lock{isUV: true, uv: lf}, nil
+		return &Lock{isUV: true, path: path, uv: lf}, nil
 	}
 	reqs, err := ParseFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return &Lock{reqs: reqs}, nil
+	return &Lock{path: path, reqs: reqs}, nil
 }
 
-// Resolve returns the pinned requirements for the given target. For uv.lock
-// this is the runtime closure (extras/package/markers applied); for a
-// requirements file it is the flat pinned list.
+// Resolve returns the pinned requirements for the given target.
+//
+// For a uv.lock, resolution (the runtime closure, extras, workspace package,
+// and group selection) is delegated to `uv export` when uv and a pyproject.toml
+// are available — uv is the source of truth, so we don't reimplement its
+// resolver. We then evaluate the per-requirement environment markers uv emits
+// for the target and attach wheel/sdist URLs from the lock. When uv isn't
+// available (e.g. air-gapped, or a bare uv.lock with no project), we fall back
+// to a built-in closure. For requirements-format locks the list is already flat
+// and pinned; we only evaluate any inline markers.
 func (l *Lock) Resolve(o Options) ([]Requirement, error) {
+	env := o.markerEnv()
 	if !l.isUV {
-		return append([]Requirement(nil), l.reqs...), nil
+		return filterByMarker(l.reqs, env), nil
 	}
-	var env MarkerEnv
-	if o.PyMajor != 0 {
-		env = NewMarkerEnv(o.OS, o.Arch, o.PyMajor, o.PyMinor)
+	if l.path != "" && uvExportUsable(l.path) {
+		return uvExportResolve(l.path, l.uv, o, env)
 	}
 	return resolveUV(l.uv, UVOptions{Package: o.Package, Extras: o.Extras, Env: env})
+}
+
+// markerEnv builds the marker environment for the target, or nil when no target
+// is given (meaning: don't filter on markers).
+func (o Options) markerEnv() MarkerEnv {
+	if o.PyMajor == 0 {
+		return nil
+	}
+	return NewMarkerEnv(o.OS, o.Arch, o.PyMajor, o.PyMinor)
+}
+
+// filterByMarker drops requirements whose marker is false for env. A nil env
+// keeps everything.
+func filterByMarker(reqs []Requirement, env MarkerEnv) []Requirement {
+	out := make([]Requirement, 0, len(reqs))
+	for _, r := range reqs {
+		if env != nil && !EvalMarker(r.Marker, env) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // DiscoverLock returns the path to a lock file in dir, preferring uv.lock.
@@ -181,7 +214,7 @@ func Parse(r io.Reader) ([]Requirement, error) {
 			// quietly omit a dependency from the image.
 			return fmt.Errorf("lock: unsupported requirement line %q (expected name==version)", strings.TrimSpace(stripped))
 		}
-		req := Requirement{Name: m[1], Version: m[2]}
+		req := Requirement{Name: m[1], Version: m[2], Marker: extractMarker(stripped)}
 		for _, h := range hashRE.FindAllStringSubmatch(stripped, -1) {
 			req.Hashes = append(req.Hashes, strings.ToLower(h[1]))
 		}
@@ -211,6 +244,20 @@ func Parse(r io.Reader) ([]Requirement, error) {
 		}
 	}
 	return reqs, nil
+}
+
+// extractMarker returns the PEP 508 marker on a (comment-stripped) requirement
+// line: the text after the first ";" and before any "--hash" entries.
+func extractMarker(line string) string {
+	i := strings.Index(line, ";")
+	if i < 0 {
+		return ""
+	}
+	rest := line[i+1:]
+	if h := strings.Index(rest, "--hash"); h >= 0 {
+		rest = rest[:h]
+	}
+	return strings.TrimSpace(rest)
 }
 
 func stripComment(s string) string {

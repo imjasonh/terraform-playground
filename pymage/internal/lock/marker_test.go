@@ -22,7 +22,9 @@ func TestEvalMarker(t *testing.T) {
 		{"python_version >= '3.10' and python_version < '3.13'", true},
 		{"python_version < '3.10' or sys_platform == 'linux'", true},
 		{"python_version < '3.10' or sys_platform == 'win32'", false},
-		{"extra == 'foo'", false}, // unknown var -> empty
+		{"extra == 'foo'", true},                              // extra is resolved upstream -> neutral
+		{"extra == 'foo' and sys_platform == 'win32'", false}, // extra neutral; platform decides
+		{"extra == 'foo' and sys_platform == 'linux'", true},
 		{"(sys_platform == 'win32') or (os_name == 'posix')", true},
 		{"platform_machine in 'x86_64 aarch64'", true}, // substring membership
 		{"'arm' not in platform_machine", true},

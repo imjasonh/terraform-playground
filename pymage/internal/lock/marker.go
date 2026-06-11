@@ -202,7 +202,7 @@ func (p *markerParser) parseAtom() (bool, error) {
 }
 
 func (p *markerParser) parseComparison() (bool, error) {
-	l, lver, err := p.parseValue()
+	l, lver, lextra, err := p.parseValue()
 	if err != nil {
 		return false, err
 	}
@@ -210,9 +210,15 @@ func (p *markerParser) parseComparison() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	r, rver, err := p.parseValue()
+	r, rver, rextra, err := p.parseValue()
 	if err != nil {
 		return false, err
+	}
+	// `extra` is resolved upstream (we ask uv/pip for the exact extras), so a
+	// clause referencing it is neutral here: treat it as satisfied rather than
+	// re-deciding extra membership.
+	if lextra || rextra {
+		return true, nil
 	}
 	return compareMarker(l, lver, op, r, rver), nil
 }
@@ -242,27 +248,31 @@ func (p *markerParser) parseOp() (string, error) {
 	return "", fmt.Errorf("expected operator, got %q", t.val)
 }
 
-// parseValue returns the value and whether it is a version-valued variable
-// (python_version / python_full_version / implementation_version).
-func (p *markerParser) parseValue() (string, bool, error) {
+// parseValue returns the value, whether it is a version-valued variable
+// (python_version / python_full_version / implementation_version), and whether
+// it is the `extra` variable (handled specially by the caller).
+func (p *markerParser) parseValue() (val string, isVersion, isExtra bool, err error) {
 	t, ok := p.peek()
 	if !ok {
-		return "", false, fmt.Errorf("expected value")
+		return "", false, false, fmt.Errorf("expected value")
 	}
 	p.pos++
 	switch t.kind {
 	case mtokString:
-		return t.val, false, nil
+		return t.val, false, false, nil
 	case mtokIdent:
+		if t.val == "extra" {
+			return "", false, true, nil
+		}
 		v, known := p.env[t.val]
 		if !known {
 			// Unknown variable: treat as empty, non-version.
-			return "", false, nil
+			return "", false, false, nil
 		}
 		isVer := t.val == "python_version" || t.val == "python_full_version" || t.val == "implementation_version"
-		return v, isVer, nil
+		return v, isVer, false, nil
 	default:
-		return "", false, fmt.Errorf("unexpected token %q", t.val)
+		return "", false, false, fmt.Errorf("unexpected token %q", t.val)
 	}
 }
 
