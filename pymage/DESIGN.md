@@ -31,7 +31,14 @@ because it exploits content-addressed layering:
   When a lock has no compatible wheel, pymage fails fast and directs the user to
   pre-build a wheel out-of-band and supply it via `--find-links`.
 - Replacing dependency *resolution*. We delegate resolution to existing,
-  correct tools (`uv` / `pip`) and consume their lockfile output.
+  correct tools and consume their output: for uv projects we shell out to
+  `uv export --frozen --no-dev` (when uv is available) to get the exact
+  per-target requirement set — closure, extras, groups, and workspace selection
+  are uv's responsibility, not ours. pymage only evaluates the markers uv emits
+  and maps each pin to a wheel. A built-in lock walker remains as a fallback for
+  environments without uv. Likewise, install layout is validated against a real
+  `uv pip install` in a conformance test (installing a wheel runs no code, so
+  there is no RCE risk in using it as an oracle).
 - A general-purpose Dockerfile interpreter. This is a focused Python app builder
   (think `ko`, but for Python wheels).
 

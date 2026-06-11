@@ -159,7 +159,13 @@ pymage build \
 ### Optional dependencies, workspaces, and markers (uv.lock)
 
 pymage installs the project's **runtime closure** from `uv.lock` (the deps you'd
-get from `uv sync --no-dev`), not every package in the lock:
+get from `uv sync --no-dev`), not every package in the lock. When `uv` is
+installed and a `pyproject.toml` is present, resolution is delegated to
+`uv export --frozen --no-dev` — uv is the source of truth for the closure,
+extras, groups, and workspace selection, so pymage doesn't reimplement its
+resolver. pymage then evaluates the environment markers uv emits for the target
+and attaches wheel URLs from the lock. (Without uv, a built-in closure walker is
+used as a fallback.) The selectors below map onto `uv export` flags:
 
 - `--extra <group>` enables one of the project's own
   `[project.optional-dependencies]` groups (repeatable). Extras requested *by*

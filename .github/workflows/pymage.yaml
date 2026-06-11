@@ -184,3 +184,66 @@ jobs:
             exit 1
           fi
           echo "Confirmed: adding a dependency reused all existing layers and added exactly one."
+
+      # Build a real uv project with *compiled* wheels (numpy, pydantic-core) and
+      # a console-script package, then actually run the image: import the native
+      # extensions, read installed metadata, and check the generated launcher.
+      # This exercises the `uv export` resolution path and install fidelity
+      # end-to-end against a real Docker runtime.
+      - name: Build & run a real uv project (compiled wheels + metadata)
+        if: runner.os == 'Linux'
+        working-directory: pymage
+        run: |
+          set -euo pipefail
+          rm -rf realapp && mkdir -p realapp/src/realapp
+          cat > realapp/pyproject.toml <<'TOML'
+          [project]
+          name = "realapp"
+          version = "0.1.0"
+          requires-python = ">=3.12,<3.13"
+          dependencies = ["numpy==2.1.3", "pydantic==2.9.2", "rich==13.9.4", "cowsay==6.1"]
+
+          [dependency-groups]
+          dev = ["ruff==0.7.4"]
+
+          [build-system]
+          requires = ["hatchling"]
+          build-backend = "hatchling.build"
+          TOML
+          echo "" > realapp/src/realapp/__init__.py
+          uv lock --project realapp
+          go run . build ./realapp \
+            --base python:3.12-slim --platform linux/amd64 \
+            --repo "$REGISTRY/realapp" -t v1 --insecure \
+            --entrypoint python --entrypoint -c --entrypoint "print('ok')"
+
+          # dev-group tool must NOT be in the image (uv export --no-dev)
+          if crane manifest --insecure "$REGISTRY/realapp:v1" \
+              | jq -r '.layers[].annotations["dev.pymage.wheels"] // empty' | grep -qi '^ruff=='; then
+            echo "::error::dev dependency 'ruff' leaked into the runtime image"
+            exit 1
+          fi
+
+          crane pull --insecure --platform linux/amd64 "$REGISTRY/realapp:v1" /tmp/realapp.tar
+          loaded=$(docker load -i /tmp/realapp.tar | sed -E 's/^Loaded image( ID)?: //' | tail -1)
+          echo "loaded image: $loaded"
+
+          # Import compiled extensions, exercise them, and read installed metadata.
+          docker run --rm --entrypoint python "$loaded" -c "
+          import numpy as np, pydantic, rich            # compiled + pure imports
+          assert np.zeros(3).sum() == 0.0               # runs the numpy C ext
+          from pydantic import BaseModel
+          class M(BaseModel):
+              x: int
+          assert M(x=2).x == 2                          # runs pydantic-core (Rust ext)
+          import importlib.metadata as md
+          for p in ('numpy', 'pydantic', 'rich', 'cowsay'):
+              print(p, md.version(p))                   # installed metadata present
+          assert 'ruff' not in {d.metadata['Name'].lower() for d in md.distributions()}
+          print('runtime import + metadata OK')
+          "
+
+          # The console-script launcher was generated and is a valid script.
+          docker run --rm --entrypoint sh "$loaded" -c \
+            'ls /app/.venv/bin && test -s /app/.venv/bin/cowsay && head -1 /app/.venv/bin/cowsay'
+          echo "Confirmed: compiled wheels import, metadata is present, dev tools excluded, launcher generated."
