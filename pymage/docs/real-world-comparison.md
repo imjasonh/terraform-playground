@@ -2,9 +2,10 @@
 
 This is a hands-on study of migrating real, uv-based Python projects that ship a
 `Dockerfile` to `pymage`. The goals were to (a) see how the resulting images
-differ and (b) surface gaps/bugs real projects hit. It directly drove a
-significant fix (runtime-only dependency resolution) and a ranked list of
-migration blockers.
+differ and (b) surface gaps/bugs real projects hit. It directly drove several
+fixes — runtime-only dependency resolution, sdist→wheel building, `--extra` /
+`--package` selection, and environment-marker evaluation — plus a ranked list of
+the remaining migration blockers.
 
 ## Method & caveats
 
@@ -75,47 +76,94 @@ Dockerfile:
   contains.
 - **Fast, docker-less builds** from any OS.
 
+## Incremental rebuilds: where layering pays off
+
+The study above compares *first* builds. The bigger day-to-day win is what
+happens on the **second** build, after a small change. Because pymage puts each
+wheel (or a stable hash-bucket of wheels) in its own content-addressed layer,
+only the layers whose bytes actually changed need to be pushed; every other
+layer is deduplicated by the registry (a `HEAD` that returns "already present").
+
+Measured against `uv-docker-example` (44 layers: base + 40 wheels + app), pushing
+both the original and modified image to the same registry and diffing the
+resulting manifests:
+
+| Change | Layers changed | Bytes re-uploaded |
+| --- | --- | --- |
+| Edit one app source file | **1 / 44** (the app layer) | **10.2 KB** |
+| Bump one dependency (`six` 1.16.0 → 1.15.0) | **1 / N** (just that wheel's layer) | **11.3 KB** |
+
+Contrast with the typical uv Dockerfile, which installs the whole environment in
+one step:
+
+```dockerfile
+RUN --mount=... uv sync --frozen --no-install-project   # one big "deps" layer
+COPY . /app                                             # app layer
+```
+
+- **Editing app code** invalidates the `COPY` layer in *both* approaches, so
+  here they're comparable (both re-push only the small app layer).
+- **Bumping a single dependency** re-runs `uv sync`, which rewrites the entire
+  virtualenv — a *single* image layer containing **all** dependencies. The whole
+  deps layer is a new blob and must be re-pushed and re-pulled: tens to hundreds
+  of MB (≈15 MB for `uv-docker-example`, ≈35 MB for the FastAPI backend, ≈190 MB
+  for `imgpush`). pymage re-uploads only the one changed wheel (≈11 KB here).
+
+So the same one-line dependency bump costs the Dockerfile its full dependency
+layer, while pymage uploads kilobytes. This mirrors the unit/e2e guarantees
+(`TestAutoAddingDepChangesOneLayer`, `TestAutoVersionBumpChangesOneLayer`, and
+the e2e no-bytes rebuild test): adding or bumping one dependency changes at most
+one layer, and an unchanged input re-pushes nothing.
+
+(The `auto` layer budget bin-packs wheels into ≤127 layers when there are more
+wheels than the budget; a changed wheel then re-pushes only its bucket-mates, so
+the worst case is one bucket rather than the whole environment.)
+
 ## Gaps & migration blockers (ranked)
 
 1. **(FIXED) Installed the whole `uv.lock`, including dev groups.** Caused
    50–63% dependency bloat above. Now resolves the runtime closure.
-2. **sdist-only dependencies are unsupported.** `imgpush` fails on
-   `timeout-decorator==0.5.0`, which publishes no wheel:
-   `uv.lock: timeout-decorator==0.5.0 has no wheels (sdist-only deps are not
-   supported)`. uv/pip build the sdist into a wheel transparently; pymage
-   consumes pre-built wheels only. This is a real blocker for projects with any
-   wheelless dependency. *Possible fix: build sdists to wheels once (shell out to
-   `uv`/`pip wheel`) and feed them into the existing layer path.*
-3. **No system/OS packages.** pymage installs Python wheels, not apt/apk
-   packages. `imgpush` needs `libmagickwand` (for `Wand`) and `nginx`; those must
-   come from the base image. Projects with system-library dependencies must pick
-   a base that already includes them — pymage can't `apt-get install`.
-4. **No extras selection.** `imgpush`'s Dockerfile uses `uv sync --extra rembg`;
-   pymage installs only the default runtime closure (no opt-in extras), so it
-   can't reproduce that dependency set. *Possible fix: a `--extra` flag feeding
-   the closure's root extras.*
+2. **(FIXED) sdist-only dependencies.** `imgpush` previously failed on
+   `timeout-decorator==0.5.0`, which publishes no wheel. pymage now builds a
+   wheel from the sdist (`pip wheel --no-deps`) and feeds it into the existing
+   layer path; the build host needs `python`/`pip`. Pure-python sdists build to
+   `py3-none-any` (any target); compiled sdists build for the host platform only
+   (cross-arch builds of those still error clearly). `imgpush` now builds with 52
+   runtime wheels including the sdist-built `timeout-decorator`.
+3. **No system/OS packages (by design — documented).** pymage installs Python
+   wheels, not apt/apk packages. `imgpush` needs `libmagickwand` (for `Wand`) and
+   `nginx`; those must come from the **base image**. Projects with system-library
+   dependencies must pick/compose a base that already includes them — pymage
+   can't `apt-get install`. See the README "Base image requirements" section.
+4. **(FIXED) Extras selection.** `--extra <group>` enables a project's own
+   `[project.optional-dependencies]` group (e.g. `imgpush`'s `rembg`), feeding the
+   closure's roots. Extras requested by dependencies (`fastapi[standard]`) were
+   already followed.
 5. **Defaulting to the base's platforms explodes on Docker Hub `python`.** That
    image advertises ~8 platforms (incl. `linux/arm/v7`, `linux/386`, `s390x`…),
    and pymage tried to build all of them, failing on
    `httptools` (no `cp312` `armv7l` wheel). Chainguard's base (amd64+arm64 only)
    is fine. *Possible fix: default the auto platform set to a curated common
    subset (amd64/arm64) or the host arch, and require explicit `--platform`
-   otherwise.*
-6. **No workspace / `--package` model.** `full-stack-fastapi-template` is a uv
-   workspace; the Dockerfile builds one member (`--package app`). pymage treats
-   all local packages as roots and unions their runtime closures — which happens
-   to be correct here, but there's no way to target a single member or pass the
-   lock at a different path cleanly.
-7. **Environment markers aren't evaluated** in the closure, so a few
-   marker-gated deps may be over-included. Bounded (wheel platform-filtering
-   catches incompatibilities), but a runtime dep gated to a non-target platform
-   with no compatible wheel would error.
+   otherwise.* (Marker evaluation, item 7, mitigates the *marker-gated* slice of
+   this; wheel availability for the arch is still required.)
+6. **(FIXED) Workspace / `--package` model.** `full-stack-fastapi-template` is a
+   uv workspace; the Dockerfile builds one member (`uv sync --package app`).
+   `--package <name>` now roots the closure at a single workspace member;
+   omitting it unions all members (the prior behavior).
+7. **(FIXED) Environment markers are now evaluated** per target. Dependency
+   markers (`sys_platform`, `platform_machine`, `python_version`, `os_name`, …,
+   with `and`/`or`/`in`/comparisons) are evaluated against the platform and
+   interpreter being built, so marker-gated deps are included only when they
+   apply (and per-arch for multi-arch builds). Unparseable markers conservatively
+   include the dependency rather than drop it.
 
 ## Verdict
 
-After the runtime-closure fix, **pymage is a smaller, faster, reproducible
-alternative to a uv Dockerfile for pure-wheel applications** (the FastAPI cases),
-with no daemon and no build tooling in the image. It is **not yet a drop-in
-replacement** for projects that need system libraries, depend on sdist-only
-packages, or rely on optional extras — those are the highest-value items to
-close next (sdist→wheel building and `--extra` support chief among them).
+After the runtime-closure fix and this round of work, **pymage is a smaller,
+faster, reproducible alternative to a uv Dockerfile** for the projects studied:
+all three now build (including `imgpush`, via sdist building), with no daemon and
+no build tooling in the image, and incremental rebuilds re-upload only changed
+layers. The main remaining caveat is **runtime system libraries**, which must be
+provided by the base image (documented), plus the multi-platform default for
+bases that advertise many architectures (item 5).

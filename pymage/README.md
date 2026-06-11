@@ -73,6 +73,8 @@ the config value, which overrides the built-in default.
 | `max-wheel-layers` | `--max-wheel-layers` | *(derived from `max-layers`)* |
 | `push-concurrency` | `--push-concurrency` | auto (≥ 4, scales with CPUs) |
 | `no-cache` | `--no-cache` | `false` (caching is on by default) |
+| `extras` | `--extra` (repeatable) | — (enables uv project optional-dependency groups) |
+| `package` | `--package` | — (build a single uv workspace member) |
 | `python` | `--python` | auto-detected from the base |
 | `prefix` | `--prefix` | `/app/.venv` |
 | `workdir` | `--workdir` | `/app` |
@@ -147,6 +149,57 @@ pymage build \
   --repo registry.example.com/me/myapp -t latest
 ```
 
+### Optional dependencies, workspaces, and markers (uv.lock)
+
+pymage installs the project's **runtime closure** from `uv.lock` (the deps you'd
+get from `uv sync --no-dev`), not every package in the lock:
+
+- `--extra <group>` enables one of the project's own
+  `[project.optional-dependencies]` groups (repeatable). Extras requested *by*
+  your dependencies (e.g. `fastapi[standard]`) are always followed.
+- `--package <name>` roots the closure at a single uv **workspace member**
+  instead of the union of all members — useful for monorepos that build several
+  images from one lock.
+- **Environment markers are evaluated for the target.** A dependency gated on
+  `sys_platform == 'win32'` or `python_version < '3.11'` is included only when it
+  applies to the platform/interpreter being built, so Linux images don't carry
+  Windows-only or stale-Python-only packages. Markers are evaluated per platform,
+  so each arch of a multi-arch build gets the correct set.
+
+### Source distributions (sdists)
+
+When the lock pins a package that has **no compatible wheel** (an sdist-only
+release, or a compiled package for a platform without a published wheel), pymage
+builds a wheel from the sdist using the host's `pip` (`pip wheel --no-deps`).
+This requires a Python toolchain (`python3`/`python` with `pip`) on the build
+host.
+
+- **Pure-python sdists** build to a `py3-none-any` wheel and work for any target.
+- **Compiled sdists** can only be built for the **host platform**; building such
+  a package for a different architecture fails with a clear compatibility error.
+  Prefer a base/lock that provides pre-built wheels for those.
+
+Built wheels are cached (keyed by the sdist hash and target) so they aren't
+rebuilt on subsequent builds.
+
+### Base image requirements (OS / system libraries)
+
+pymage installs Python wheels on top of the base image; it does **not** install
+OS packages. The base image must already provide everything your dependencies
+need at runtime beyond the interpreter and pure-Python code, including:
+
+- the Python interpreter and standard library (matching the lock's `cp` tags);
+- shared system libraries that compiled wheels link against (e.g. `libffi`,
+  `libssl`, `libstdc++`, `libgomp` for some ML wheels); and
+- non-Python runtime tools your app shells out to (e.g. ImageMagick for Wand,
+  `ffmpeg`, `git`).
+
+Choose (or build) a base that bundles these. For Debian-style bases that means a
+variant with the libraries preinstalled; for Chainguard/Wolfi, compose a base
+with the needed `apk` packages. If a dependency needs a system library the base
+lacks, the image builds fine but fails at runtime — pymage can't add `apt`/`apk`
+packages for you.
+
 ### Choosing a base image
 
 The base is an input to the build, so it affects reproducibility just like the
@@ -184,6 +237,8 @@ base that advertises its version.
 | `--push-concurrency` | Max concurrent layer uploads when pushing (0 = auto). |
 | `--platform` | Target platform(s); selects compatible wheels and base. Repeatable / comma-separated (e.g. `linux/amd64,linux/arm64`) builds a multi-arch image index. Defaults to the platforms the base image supports. |
 | `--python` | Interpreter version, e.g. `python3.12`. Optional — **auto-detected from the base** when omitted; if set, must match the base. Drives wheel selection and the site-packages layout. |
+| `--extra` | Enable a uv project optional-dependency group (repeatable). |
+| `--package` | Build a single uv workspace member by name (default: union of all members). |
 | `--cache-dir` | Cache root (default: `$PYMAGE_CACHE_DIR` or the per-user cache dir). Caches compressed layers, downloaded wheels, and base interpreter detection. |
 | `--no-cache` | Disable all caching (layers, downloaded wheels, interpreter detection). |
 | `--prefix` | install prefix / venv root (default `/app/.venv`). |
