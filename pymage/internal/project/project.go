@@ -48,6 +48,7 @@ type Config struct {
 	NoCache        bool              `toml:"no-cache"`
 	Extras         []string          `toml:"extras"`
 	Package        string            `toml:"package"`
+	RepackSdists   bool              `toml:"repack-sdists"`
 }
 
 const defaultBase = "cgr.dev/chainguard/python:latest"

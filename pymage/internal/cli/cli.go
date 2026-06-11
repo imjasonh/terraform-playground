@@ -64,14 +64,15 @@ type buildFlags struct {
 	maxWheelLayers int
 	pushJobs       int
 
-	push        bool
-	ociLayout   string
-	printDigest bool
-	sbomOut     string
-	requireHash bool
-	insecure    bool
-	cacheDir    string
-	noCache     bool
+	push         bool
+	ociLayout    string
+	printDigest  bool
+	sbomOut      string
+	requireHash  bool
+	insecure     bool
+	cacheDir     string
+	noCache      bool
+	repackSdists bool
 }
 
 func buildCmd() *cobra.Command {
@@ -119,6 +120,7 @@ func buildCmd() *cobra.Command {
 	fs.BoolVar(&f.insecure, "insecure", false, "use plain HTTP for the registry")
 	fs.StringVar(&f.cacheDir, "cache-dir", "", "cache root directory (default: per-user cache dir)")
 	fs.BoolVar(&f.noCache, "no-cache", false, "disable all build caches (layers, downloaded wheels, interpreter detection)")
+	fs.BoolVar(&f.repackSdists, "repack-sdists", false, "repack pure-Python sdists into wheels when no compatible wheel exists (opt-in; executes no build code; rejects anything needing a real build)")
 	return cmd
 }
 
@@ -256,7 +258,7 @@ func buildOne(ctx context.Context, f *buildFlags, lk *lock.Lock, platform *v1.Pl
 		return nil, nil, err
 	}
 
-	wheels, err := wheelhouse.ResolveContext(ctx, reqs, f.findLinks, target, wheelCache)
+	wheels, err := wheelhouse.ResolveContext(ctx, reqs, f.findLinks, target, wheelCache, f.repackSdists)
 	if err != nil {
 		return nil, nil, err
 	}
