@@ -47,7 +47,7 @@ type candidate struct {
 // per-user cache directory. Results are sorted by (normalized name, version)
 // for deterministic ordering.
 func Resolve(reqs []lock.Requirement, dirs []string, target wheel.Target) ([]ResolvedWheel, error) {
-	return ResolveContext(context.Background(), reqs, dirs, target, defaultWheelCacheDir())
+	return ResolveContext(context.Background(), reqs, dirs, target, defaultWheelCacheDir(), false)
 }
 
 // defaultWheelCacheDir returns the per-user wheel download cache, or "" if the
@@ -62,8 +62,10 @@ func defaultWheelCacheDir() string {
 }
 
 // ResolveContext is Resolve with an explicit context and on-disk wheel cache
-// directory for lock-file downloads.
-func ResolveContext(ctx context.Context, reqs []lock.Requirement, dirs []string, target wheel.Target, wheelCacheDir string) ([]ResolvedWheel, error) {
+// directory for lock-file downloads. When allowSdist is true, packages with no
+// compatible wheel may be built from their source distribution (which executes
+// the dependency's build code on this host); otherwise such packages error.
+func ResolveContext(ctx context.Context, reqs []lock.Requirement, dirs []string, target wheel.Target, wheelCacheDir string, allowSdist bool) ([]ResolvedWheel, error) {
 	var index map[string][]candidate
 	if len(dirs) > 0 {
 		var err error
@@ -80,7 +82,7 @@ func ResolveContext(ctx context.Context, reqs []lock.Requirement, dirs []string,
 
 	out := make([]ResolvedWheel, 0, len(reqs))
 	for _, req := range reqs {
-		rw, err := resolveOne(ctx, req, index, target, cache)
+		rw, err := resolveOne(ctx, req, index, target, cache, allowSdist)
 		if err != nil {
 			return nil, err
 		}
@@ -97,7 +99,7 @@ func ResolveContext(ctx context.Context, reqs []lock.Requirement, dirs []string,
 	return out, nil
 }
 
-func resolveOne(ctx context.Context, req lock.Requirement, index map[string][]candidate, target wheel.Target, cache *wheelCache) (ResolvedWheel, error) {
+func resolveOne(ctx context.Context, req lock.Requirement, index map[string][]candidate, target wheel.Target, cache *wheelCache, allowSdist bool) (ResolvedWheel, error) {
 	key := lock.NormalizeName(req.Name) + "\x00" + req.Version
 	if index != nil {
 		if cands := index[key]; len(cands) > 0 {
@@ -141,6 +143,14 @@ func resolveOne(ctx context.Context, req lock.Requirement, index map[string][]ca
 		if req.Sdist == nil {
 			return ResolvedWheel{}, err
 		}
+		// No compatible lock wheel; consider building from the sdist below.
+	}
+
+	// Building from an sdist runs the dependency's own build code (setup.py /
+	// build backend) on this host with no container isolation, so it is gated
+	// behind explicit opt-in.
+	if !allowSdist {
+		return ResolvedWheel{}, fmt.Errorf("wheelhouse: %s==%s has no compatible pre-built wheel and would have to be built from its source distribution, which runs arbitrary build code from the dependency on this machine; pass --build-sdists (or set build-sdists in [tool.pymage]) to allow it, or supply a pre-built wheel via --find-links", req.Name, req.Version)
 	}
 	return buildFromSdist(ctx, req, target, cache)
 }

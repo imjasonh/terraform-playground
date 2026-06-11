@@ -21,7 +21,9 @@ import (
 // returns it as a ResolvedWheel. The built wheel is cached (keyed by the sdist
 // hash and target) so it isn't rebuilt on subsequent builds.
 //
-// Building runs the host's `pip wheel`, so a Python toolchain must be present.
+// This is only reached when the caller opted in (allowSdist), because building
+// runs the dependency's own build code on the host with no isolation. Building
+// runs the host's `pip wheel`, so a Python toolchain must be present.
 // A pure-python sdist yields a `py3-none-any` wheel usable on any target; a
 // compiled sdist is built for the host platform only, so cross-arch builds of
 // such packages will fail the compatibility check with a clear error.

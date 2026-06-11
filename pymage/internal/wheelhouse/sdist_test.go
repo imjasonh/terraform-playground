@@ -1,8 +1,10 @@
 package wheelhouse
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/imjasonh/terraform-playground/pymage/internal/lock"
@@ -53,6 +55,25 @@ func TestSelectBuiltWheelWrongVersion(t *testing.T) {
 
 	if _, err := selectBuiltWheel(dir, req, target); err == nil {
 		t.Fatal("expected error: built wheel version mismatch")
+	}
+}
+
+func TestSdistRequiresOptIn(t *testing.T) {
+	// An sdist-only requirement (no wheels) must error unless opted in, rather
+	// than silently building (which runs the dependency's build code).
+	req := lock.Requirement{
+		Name:    "timeout-decorator",
+		Version: "0.5.0",
+		Sdist:   &lock.SdistRef{URL: "https://example/timeout_decorator-0.5.0.tar.gz", SHA256: "deadbeef", Filename: "timeout_decorator-0.5.0.tar.gz"},
+	}
+	target := wheel.Target{OS: "linux", Arch: "amd64", PyMajor: 3, PyMinor: 12}
+
+	_, err := ResolveContext(context.Background(), []lock.Requirement{req}, nil, target, t.TempDir(), false)
+	if err == nil {
+		t.Fatal("expected error when sdist build is not opted in")
+	}
+	if !strings.Contains(err.Error(), "--build-sdists") {
+		t.Fatalf("error should point at the opt-in flag, got: %v", err)
 	}
 }
 
