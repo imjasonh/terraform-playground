@@ -210,7 +210,10 @@ pymage build --find-links ./wheelhouse -t latest
 ```
 
 This keeps the escape hatch for the rare cases while keeping pymage's builds
-hermetic, reproducible, multi-arch, and free of arbitrary build-time code.
+hermetic, reproducible, multi-arch, and free of arbitrary build-time code. In
+practice the wheels-only constraint costs very little: a survey of real projects
+found **~99.7% of the dependencies apps actually use** are installable, and most
+projects build unchanged (see [`docs/wheel-coverage-survey.md`](./docs/wheel-coverage-survey.md)).
 
 ### Base image requirements (OS / system libraries)
 
