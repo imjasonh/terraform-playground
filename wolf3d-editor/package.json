@@ -1,0 +1,17 @@
+{
+  "name": "wolf3d-editor-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "pnpm -r test",
+    "build": "pnpm --filter @wolf3d/app build",
+    "dev": "pnpm --filter @wolf3d/app dev",
+    "typecheck": "pnpm -r typecheck",
+    "gen:data": "node packages/data/scripts/generate.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
