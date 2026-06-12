@@ -75,8 +75,8 @@ export function Playtest() {
       {error && <div style={{ padding: 12, color: 'var(--danger)' }}>{error}</div>}
       <div ref={hostRef} style={{ flex: 1, minHeight: 0, background: '#000' }} />
       <div style={{ padding: 6, fontSize: 11, color: 'var(--dim)' }}>
-        Runs your own game EXE in DOSBox-WASM (js-dos), loaded from the js-dos CDN at runtime. Game files stay in this
-        tab — the bundle is a local blob.
+        Runs your own game EXE in DOSBox-WASM (js-dos, self-hosted with this app). Game files stay in this tab — the
+        bundle is a local blob.
       </div>
     </div>
   );

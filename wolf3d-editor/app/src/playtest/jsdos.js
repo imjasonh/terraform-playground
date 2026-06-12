@@ -1,32 +1,47 @@
 // In-browser playtest: boots the user's own game EXE in js-dos (DOSBox
 // compiled to WebAssembly), against the files the editor just compiled.
-// The emulator runtime is loaded on demand from the js-dos CDN; the game
-// files never leave the tab (the bundle is a local blob URL).
+// The emulator runtime is self-hosted (copied from the js-dos npm package
+// into public/jsdos at build time), with the js-dos CDN as a fallback; the
+// game files never leave the tab (the bundle is a local blob URL).
 
 import { buildZip } from '../io/zip.js';
 
-const JSDOS_JS = 'https://v8.js-dos.com/latest/js-dos.js';
-const JSDOS_CSS = 'https://v8.js-dos.com/latest/js-dos.css';
+const LOCAL_BASE = `${import.meta.env.BASE_URL}jsdos/`;
+const CDN_BASE = 'https://v8.js-dos.com/latest/';
 
 let loaded = null;
 
-/** Load the js-dos runtime once. */
-function loadRuntime() {
-  if (loaded) return loaded;
-  loaded = new Promise((resolve, reject) => {
+/** @param {string} base */
+function loadFrom(base) {
+  return new Promise((resolve, reject) => {
     const css = document.createElement('link');
     css.rel = 'stylesheet';
-    css.href = JSDOS_CSS;
+    css.href = `${base}js-dos.css`;
     document.head.appendChild(css);
     const script = document.createElement('script');
-    script.src = JSDOS_JS;
+    script.src = `${base}js-dos.js`;
     script.onload = () => {
-      if (window.Dos) resolve(window.Dos);
+      if (window.Dos) resolve({ Dos: window.Dos, base });
       else reject(new Error('js-dos loaded but Dos() missing'));
     };
-    script.onerror = () => reject(new Error('Could not load the js-dos runtime (offline? CDN blocked?)'));
+    script.onerror = () => {
+      css.remove();
+      script.remove();
+      reject(new Error(`could not load js-dos from ${base}`));
+    };
     document.head.appendChild(script);
   });
+}
+
+/** Load the js-dos runtime once: self-hosted first, CDN as fallback. */
+function loadRuntime() {
+  if (loaded) return loaded;
+  loaded = loadFrom(LOCAL_BASE).catch(() =>
+    loadFrom(CDN_BASE).catch(() => {
+      loaded = null;
+      throw new Error('Could not load the js-dos runtime (neither self-hosted copy nor CDN reachable).');
+    }),
+  );
   return loaded;
 }
 
@@ -92,7 +107,7 @@ let instance = null;
  * @param {Uint8Array} bundle
  */
 export async function bootBundle(el, bundle) {
-  const Dos = await loadRuntime();
+  const { Dos, base } = await loadRuntime();
   await stopPlaytest();
   const ab = new ArrayBuffer(bundle.byteLength);
   new Uint8Array(ab).set(bundle);
@@ -100,6 +115,7 @@ export async function bootBundle(el, bundle) {
   el.innerHTML = '';
   const props = Dos(el, {
     url,
+    pathPrefix: `${base}emulators/`,
     autoStart: true,
     noCloud: true,
     kiosk: true,
