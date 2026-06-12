@@ -1,3 +1,5 @@
+# Re-include our app dir (the repo root ignores */app for unrelated reasons).
+!/app/
 node_modules/
 dist/
 *.local

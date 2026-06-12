@@ -1,0 +1,17 @@
+{
+  "name": "@wolf3d/data",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p jsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0",
+    "typescript": "^5.6.0"
+  }
+}

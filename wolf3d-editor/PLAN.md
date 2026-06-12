@@ -265,7 +265,7 @@ contract.
 | Codec | Read | Write | Notes |
 |---|---|---|---|
 | `MAPHEAD.*` | ✔ | ✔ | RLEW tag + 100 `int32` offsets (0/-1 = empty slot); preserve trailing `tileinfo` bytes if present |
-| `GAMEMAPS.*` | ✔ | ✔ | `TED5v1.0` signature; per-level 42-byte header (3 plane offsets, 3 plane lengths, width, height, 16-char name); detect & support `MAPTEMP` (uncarmackized) variant |
+| `GAMEMAPS.*` | ✔ | ✔ | `TED5v1.0` signature; per-level 38-byte header (3 plane offsets, 3 plane lengths, width, height, 16-char name); detect & support `MAPTEMP` (uncarmackized) variant |
 | RLEW | ✔ | ✔ | Word-level RLE with tag from MAPHEAD (0xABCD) |
 | Carmack | ✔ | ✔ | Near (0xA7) / far (0xA8) references, count-0 escape for literal words with A7/A8 high bytes |
 | `VSWAP.*` | ✔ | ✔ | Chunk directory (u32 offsets + u16 lengths), `spriteStart`/`soundStart` partitions; walls = raw 64×64 column-major; sprites = compiled posts; sounds = raw PCM pages + trailing info table (preserved verbatim in v1) |
@@ -945,7 +945,7 @@ chaingun consumes 2 rounds/shot.
 `tileinfo[]` tail (preserve verbatim).
 
 ### D.2 GAMEMAPS
-Optional `"TED5v1.0"` signature, then chunks in any order. Per level a 42-byte header:
+Optional `"TED5v1.0"` signature, then chunks in any order. Per level a 38-byte header:
 `i32 planeStart[3]` · `u16 planeLength[3]` (compressed bytes) · `u16 width,height` (ignored by
 the engine; always 64) · `char name[16]`. Wolf3D always loads planes 0 and 1.
 Plane chunk (v1.1+): `u16 carmackExpandedLen`, Carmack data → RLEW block

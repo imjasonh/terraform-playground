@@ -11,6 +11,8 @@
     "gen:data": "node packages/data/scripts/generate.js"
   },
   "devDependencies": {
+    "@types/node": "^25.9.3",
+    "playwright-core": "^1.60.0",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
   }

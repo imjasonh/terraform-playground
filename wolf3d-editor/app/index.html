@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%23222'/><rect x='2' y='2' width='12' height='12' fill='%23c33'/></svg>" />
+    <title>Wolf3D Editor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #1a1a22;
+        --panel: #23232e;
+        --panel2: #2b2b38;
+        --border: #3a3a4a;
+        --text: #d8d8e0;
+        --dim: #8a8a9a;
+        --accent: #4a9eff;
+        --danger: #ff5a5a;
+        --warn: #ffb84a;
+      }
+      * { box-sizing: border-box; }
+      html, body, #root { height: 100%; margin: 0; }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
+        font-size: 13px;
+        overflow: hidden;
+      }
+      button {
+        background: var(--panel2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 4px 10px;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover { border-color: var(--accent); }
+      button.active { background: var(--accent); color: #08111f; border-color: var(--accent); }
+      select, input[type="text"] {
+        background: var(--panel2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 3px 6px;
+        font: inherit;
+      }
+      canvas { image-rendering: pixelated; }
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
