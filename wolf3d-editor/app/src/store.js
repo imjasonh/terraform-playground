@@ -247,6 +247,47 @@ export function setSpritePixels(num, pixels) {
   notify();
 }
 
+/**
+ * Create a fresh level in an empty slot: solid grey-stone border, floor code
+ * 6C inside, player start in the middle (the engine requires exactly one).
+ * @param {number} slot
+ */
+export function createLevel(slot) {
+  const game = store.game;
+  if (!game || game.levels[slot]) return;
+  const plane0 = new Uint16Array(MAP_WIDTH * MAP_WIDTH);
+  const plane1 = new Uint16Array(MAP_WIDTH * MAP_WIDTH);
+  for (let y = 0; y < MAP_WIDTH; y++) {
+    for (let x = 0; x < MAP_WIDTH; x++) {
+      const border = x === 0 || y === 0 || x === MAP_WIDTH - 1 || y === MAP_WIDTH - 1;
+      plane0[y * MAP_WIDTH + x] = border ? 1 : 0x6c;
+    }
+  }
+  plane1[32 * MAP_WIDTH + 32] = 19; // player start facing north
+  game.levels[slot] = { name: `New Map ${slot + 1}`, plane0, plane1, plane2: null };
+  store.ui.level = slot;
+  store.ui.dirty = true;
+  notify();
+}
+
+/**
+ * Remove a level from its slot.
+ * @param {number} slot
+ */
+export function deleteLevel(slot) {
+  const game = store.game;
+  if (!game || !game.levels[slot]) return;
+  game.levels[slot] = null;
+  store.undoStack = store.undoStack.filter((r) => r.level !== slot);
+  store.redoStack = store.redoStack.filter((r) => r.level !== slot);
+  if (store.ui.level === slot) {
+    const next = game.levels.findIndex(Boolean);
+    store.ui.level = next >= 0 ? next : 0;
+  }
+  store.ui.dirty = true;
+  notify();
+}
+
 /** Mutate UI state and notify. @param {(ui: typeof store.ui) => void} fn */
 export function updateUi(fn) {
   fn(store.ui);

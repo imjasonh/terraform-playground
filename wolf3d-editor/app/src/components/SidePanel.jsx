@@ -1,6 +1,6 @@
 import React from 'react';
 import { levelLabel, LIMITS } from '@wolf3d/data';
-import { store, currentLevel, updateUi } from '../store.js';
+import { store, currentLevel, updateUi, createLevel, deleteLevel } from '../store.js';
 import { useStoreVersion } from '../hooks.js';
 import { levelStats } from '../game/stats.js';
 import { floorCodeColor } from '../game/assets.js';
@@ -39,8 +39,18 @@ export function SidePanel() {
         minHeight: 0,
       }}
     >
-      <div style={{ color: 'var(--dim)', fontSize: 11, padding: '8px 8px 4px' }}>
+      <div style={{ color: 'var(--dim)', fontSize: 11, padding: '8px 8px 4px', display: 'flex', alignItems: 'center' }}>
         LEVELS ({game.levels.filter(Boolean).length} in {game.ext.toUpperCase()})
+        <button
+          style={{ marginLeft: 'auto', padding: '0 6px', fontSize: 11 }}
+          title="Create a level in the first empty slot"
+          onClick={() => {
+            const slot = game.levels.findIndex((l) => !l);
+            if (slot >= 0) createLevel(slot);
+          }}
+        >
+          + new
+        </button>
       </div>
       <div style={{ overflowY: 'auto', maxHeight: '38%', borderBottom: '1px solid var(--border)' }}>
         {game.levels.map((l, i) =>
@@ -60,10 +70,24 @@ export function SidePanel() {
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
+                display: 'flex',
+                alignItems: 'center',
               }}
             >
               <span style={{ opacity: 0.6, marginRight: 6 }}>{levelLabel(i)}</span>
-              {l.name || '(unnamed)'}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{l.name || '(unnamed)'}</span>
+              {store.ui.level === i && (
+                <span
+                  title="Delete this level"
+                  style={{ marginLeft: 'auto', cursor: 'pointer', padding: '0 4px' }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (window.confirm(`Delete ${levelLabel(i)} "${l.name}"?`)) deleteLevel(i);
+                  }}
+                >
+                  ✕
+                </span>
+              )}
             </div>
           ) : null,
         )}
