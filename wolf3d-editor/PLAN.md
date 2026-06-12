@@ -24,7 +24,7 @@ and functions appear throughout.
 6. [The Project Model](#6-the-project-model)
 7. [Map Editor — Detailed Specification](#7-map-editor--detailed-specification)
 8. [Graphics Studio — Sprite, Texture, and UI Editing](#8-graphics-studio--sprite-texture-and-ui-editing)
-9. [3D Preview](#9-3d-preview)
+9. [3D Preview and In-Browser Playtest](#9-3d-preview-and-in-browser-playtest)
 10. [Validation Engine](#10-validation-engine)
 11. [Testing Strategy](#11-testing-strategy)
 12. [Milestones](#12-milestones)
@@ -43,7 +43,9 @@ and functions appear throughout.
 
 ### 1.1 What we are building
 
-A single application with two halves:
+A **web app, entirely client-side** (plain JavaScript; Rust→WASM only where profiling proves
+the need — §4.3), with full import/export of all game files and one-keystroke **in-browser
+playtesting** of the compiled mod (§9.2). A single application with two halves:
 
 1. **Map editor** — edits the 64×64, two-plane tile maps stored in `GAMEMAPS.*`/`MAPHEAD.*`,
    with the complete catalog of wall tiles, doors, floor codes, decorations, power-ups, keys,
@@ -158,10 +160,11 @@ adding manifests, without touching the editor core.
 
 ### 3.3 Deliverables
 
-1. `packages/codec` — dependency-free TypeScript library: every file format, fully tested.
+1. `packages/codec` — dependency-free JavaScript library: every file format, fully tested.
 2. `packages/data` — game profiles: tile/object catalogs, sprite/pic manifests, palette, limits,
    per-level metadata reference tables (Appendices A–E rendered to JSON).
-3. `app` — the editor application (map editor, graphics studio, 3D preview, validator).
+3. `app` — the editor application (map editor, graphics studio, 3D preview, **in-browser
+   playtest**, validator).
 4. Documentation: user guide written in community vocabulary, plus "format notes" derived from
    this plan.
 
@@ -169,59 +172,85 @@ adding manifests, without touching the editor core.
 
 ## 4. Architecture and Technology
 
-### 4.1 Platform decision: browser-based, fully client-side
+### 4.1 Platform decision: a web app, entirely client-side
 
-**TypeScript + Vite SPA. No backend. Files never leave the machine.**
+**JavaScript + Vite SPA. No backend, no server-side processing of any kind. Files never leave
+the machine.**
 
 Rationale:
 
 - **Licensing safety**: game data is loaded by the user from their own disk (File System Access
-  API with drag-and-drop fallback); we never host or transmit id's assets.
+  API with drag-and-drop / file-input fallback); we never host or transmit id's assets. All
+  parsing, editing, compiling, and playtesting happens in the browser tab.
 - **Distribution**: a static site fits this repository's existing Cloudflare Worker deployment
-  patterns (`cf-worker/`); zero-install matches the "double-click MAPEDIT.EXE" spirit.
+  patterns (`cf-worker/`); zero-install matches the "double-click MAPEDIT.EXE" spirit. The app
+  works offline once loaded (installable PWA with a service-worker cache).
 - **Capability**: a 64×64 grid, 4096-byte textures, and a 320×200 raycaster are trivially within
   Canvas2D/WebGL budgets. ChaosEdit did the 3D preview on 2002 hardware.
-- An **Electron/Tauri wrapper** is a packaging afterthought if a desktop binary is wanted; the
-  codebase does not depend on it.
+- **Playtesting stays in the tab too** (§9.2): the compiled mod boots in an embedded
+  DOSBox-compiled-to-WASM emulator running the user's own game executable — the real game, in
+  the browser, against the files the editor just wrote.
 
 ### 4.2 Technology choices
 
 | Concern | Choice | Notes |
 |---|---|---|
-| Language | TypeScript (strict) | Binary codecs benefit from typed arrays; one language end-to-end |
+| Language | **JavaScript** (modern ES modules) with JSDoc annotations + `// @ts-check` | Typed-array-heavy code is plain JS; JSDoc gives editor/CI type checking with no compile step. Rust→WASM only where profiling demands it (§4.4) |
 | Build | Vite + pnpm workspaces | `packages/codec`, `packages/data`, `app` |
 | UI framework | React | Panels/palettes/dialogs are form-heavy; map canvas and pixel editors are raw `<canvas>` components with imperative drawing, React only orchestrates |
 | State | Single immutable document store (Zustand or hand-rolled reducer) | Undo/redo = snapshot stack of structural-shared plane arrays; `Uint16Array` copy of one plane is 8 KB — snapshotting is cheap, no need for cleverness |
 | Map rendering | Canvas2D, dirty-rect repaint | 64×64 tiles at up to 32 px/tile; full repaint is already fast, dirty-rects keep it instant |
 | 3D preview | Software raycaster rendered to a 320×200 (configurable) offscreen buffer, blitted scaled | Faithful by construction: same DDA algorithm class as `WL_DRAW.C`, dark/light wall faces, solid floor/ceiling colors |
+| **In-browser playtest** | js-dos (DOSBox→Emscripten/WASM) booting the user's game EXE against the compiled output files | The genuine engine, zero behavioral approximation; see §9.2 |
 | Pixel editing | Canvas2D with integer zoom (×1–×16), checkerboard for color 255 | |
-| Persistence | Project folder on disk via File System Access API; project metadata in `project.json` | See §6 |
-| Tests | Vitest; golden-file round-trip tests against shareware data (user-supplied in CI via cached fixture, see §11.4) | |
+| Persistence | Project folder on disk via File System Access API; OPFS/IndexedDB mirror + plain download/upload where FS Access is unavailable; project metadata in `project.json` | See §6 |
+| Import/export | Per-file and whole-mod ZIP import/export, PNG sheets, JSON levels | See §6.3 |
+| Tests | Vitest; golden-file round-trip tests against shareware data (see §11.4) | |
 
-### 4.3 Module map
+### 4.3 JavaScript first; Rust + WASM only where measured
+
+Default to plain JavaScript everywhere. The workloads here are small: a map plane is 8 KB, a
+wall texture 4 KB, the whole WL6 `VSWAP` ~1.5 MB — codecs, compressors, and the validator are
+microseconds-to-milliseconds in JS with typed arrays. A Rust→WASM module is introduced **only**
+when profiling on real data shows JS missing an interactivity budget, behind the same interface
+so it is a drop-in. Pre-identified candidates, in likelihood order:
+
+1. **Palette quantization + ordered dithering** of large imported images (multi-megapixel PNG →
+   indexed 256) — the only plausibly heavy hot loop.
+2. **Raycaster inner loop** at large canvas sizes (only if the faithful 320×200 buffer is ever
+   raised significantly).
+3. Carmack/RLEW/Huffman batch recompression of a whole 100-level set — almost certainly fine in
+   JS; listed for completeness.
+
+(The playtest emulator is third-party WASM already — that does not count against this rule.)
+
+### 4.4 Module map
 
 ```
 wolf3d-editor/
   packages/
-    codec/            # binary formats, zero deps
-      src/maphead.ts      # MAPHEAD read/write
-      src/gamemaps.ts     # GAMEMAPS level dir + plane chunks
-      src/rlew.ts         # RLEW expand/compress
-      src/carmack.ts      # Carmack expand/compress (near/far/escape)
-      src/vswap.ts        # VSWAP chunk dir, wall pages, sound pages
-      src/sprite.ts       # compiled-sprite decode/encode (posts)
-      src/huffman.ts      # VGADICT Huffman expand/compress
-      src/vgagraph.ts     # VGAHEAD/VGAGRAPH chunks, pictable, fonts, pics
-      src/palette.ts      # Wolf palette, nearest-color, remap tables
+    codec/            # binary formats, zero deps, plain JS (+ JSDoc types)
+      src/maphead.js      # MAPHEAD read/write
+      src/gamemaps.js     # GAMEMAPS level dir + plane chunks
+      src/rlew.js         # RLEW expand/compress
+      src/carmack.js      # Carmack expand/compress (near/far/escape)
+      src/vswap.js        # VSWAP chunk dir, wall pages, sound pages
+      src/sprite.js       # compiled-sprite decode/encode (posts)
+      src/huffman.js      # VGADICT Huffman expand/compress
+      src/vgagraph.js     # VGAHEAD/VGAGRAPH chunks, pictable, fonts, pics
+      src/palette.js      # Wolf palette, nearest-color, remap tables
     data/
       profiles/wl6.json   # catalogs+limits per game (also wl1, wl3, sod, sdm)
       symbols/            # MapEdit-style editor glyphs (our own pixel art)
     app/
       src/document/       # project model, undo, dirty tracking
+      src/io/             # FS Access / OPFS / upload-download, ZIP import-export
       src/mapeditor/      # canvas views, tools, palettes, stats
       src/gfxstudio/      # texture/sprite/pic/font editors
       src/preview3d/      # raycaster
+      src/playtest/       # embedded DOSBox-WASM harness (§9.2)
       src/validate/       # rule engine (§10)
+    quant-wasm/       # (only if §4.3 triggers) Rust image-quantization module
 ```
 
 ---
@@ -279,19 +308,20 @@ contract.
 
 ### 6.2 The document model
 
-```ts
-interface LevelDoc {
-  name: string;            // 16 bytes, NUL-padded, from GAMEMAPS header
-  plane0: Uint16Array;     // 64*64 wall plane
-  plane1: Uint16Array;     // 64*64 object plane
-  plane2?: Uint16Array;    // preserved if present (some mods use it); hidden unless enabled
-}
-interface GameDoc {
-  profile: GameProfile;    // wl1 | wl3 | wl6 | sod | sdm (catalogs, limits, manifests)
-  levels: (LevelDoc | null)[];   // 100 slots, faithful to MAPHEAD
-  vswap: VSwapDoc;         // walls[], sprites[], sounds[] (sounds opaque in v1)
-  vgagraph: VgaGraphDoc;   // pictable, pics[], fonts[], tile8, endscreens, demos
-}
+```js
+/**
+ * @typedef {Object} LevelDoc
+ * @property {string} name           // 16 bytes, NUL-padded, from GAMEMAPS header
+ * @property {Uint16Array} plane0    // 64*64 wall plane
+ * @property {Uint16Array} plane1    // 64*64 object plane
+ * @property {Uint16Array} [plane2]  // preserved if present (some mods use it); hidden unless enabled
+ *
+ * @typedef {Object} GameDoc
+ * @property {GameProfile} profile   // wl1 | wl3 | wl6 | sod | sdm (catalogs, limits, manifests)
+ * @property {(LevelDoc|null)[]} levels  // 100 slots, faithful to MAPHEAD
+ * @property {VSwapDoc} vswap        // walls[], sprites[], sounds[] (sounds opaque in v1)
+ * @property {VgaGraphDoc} vgagraph  // pictable, pics[], fonts[], tile8, endscreens, demos
+ */
 ```
 
 - **Undo/redo:** unlimited, per-document, grouped by gesture (a drag-paint is one undo step; a
@@ -300,6 +330,34 @@ interface GameDoc {
 - **Level-list operations** (faithful to what mappers actually do): insert/delete/duplicate/move
   level slots, import/export single levels as standalone files (MapEdit floor-file interchange,
   plus our own JSON), copy a level between two open projects.
+
+### 6.3 Import and export (everything in, everything out)
+
+Because the app is entirely client-side, file exchange is a first-class feature, not an
+afterthought. Every artifact the editor can hold can be brought in and taken out:
+
+**Import:**
+- A whole game/mod directory (File System Access directory picker) or a dropped set of files;
+  a dropped **ZIP of a mod** is unpacked in-memory and opened directly (most classic mods are
+  distributed exactly this way).
+- Individual game files (`GAMEMAPS.*`+`MAPHEAD.*`, `VSWAP.*`, `VGAGRAPH.*`+`VGAHEAD.*`+
+  `VGADICT.*`), auto-detected by name/extension/contents and merged into the open project.
+- Single levels: MapEdit floor files, our JSON level format, and (M8) ChaosEdit/WDC/HWE map
+  exports.
+- Graphics: PNG/BMP (palette-quantized on entry) for any wall, sprite, pic, font glyph sheet.
+
+**Export:**
+- **"Download mod"** — one click produces a ZIP containing the complete compiled file set
+  (`GAMEMAPS`/`MAPHEAD`/`VSWAP`/`VGAGRAPH`/`VGAHEAD`/`VGADICT` with correct extensions), ready
+  to drop into a game directory, distribute, or feed back into this editor. This works even in
+  browsers without File System Access (plain `<a download>`).
+- Any individual compiled file; any single level as MapEdit floor file or JSON; any graphic or
+  full sheet as PNG (×1/×4/×8); the validator report as Markdown; the project itself as a
+  portable `.wolfproj.zip` (project.json + PNG-form graphics + level JSONs — the git-friendly
+  form).
+- Where File System Access is available, "save in place" and "compile to folder" write directly
+  to disk; otherwise the editor mirrors state to OPFS/IndexedDB between sessions and exports via
+  download.
 
 ---
 
@@ -500,9 +558,13 @@ designers see *game meaning*, not just art.
 
 ---
 
-## 9. 3D Preview
+## 9. 3D Preview and In-Browser Playtest
 
-ChaosEdit's killer feature, rebuilt properly:
+Two complementary in-tab experiences: a **live 3D preview** for instant editing feedback, and a
+**real playtest** that boots the actual game against the compiled files. Neither requires
+leaving the browser.
+
+### 9.1 3D preview (ChaosEdit's killer feature, rebuilt properly)
 
 - **Walk mode** (`F3` or a viewport toggle): WASD + mouse-look (yaw only — the engine has no
   pitch), collision on the tilemap, doors open with `Space`/`E` honoring locks (with a "give all
@@ -515,9 +577,33 @@ ChaosEdit's killer feature, rebuilt properly:
   - optional authentic touches: 70 Hz tick simulation, view-size border, weapon hand overlay.
 - **Sync:** the preview is live against the document — edit a wall in 2D and see it instantly;
   click a wall/sprite in 3D to select its tile in the 2D editor ("what code is this?").
-- Enemies render at spawn positions per the selected difficulty filter; no AI simulation in v1
-  (preview, not emulation — for real play we document the DOSBox/Wolf4SDL/ECWolf launch loop, and
-  in project mode "Compile and copy to test folder" makes that loop one keystroke).
+- Enemies render at spawn positions per the selected difficulty filter; **no AI simulation** —
+  the preview deliberately stops where approximation would begin. Real behavior belongs to the
+  real engine, one keystroke away:
+
+### 9.2 Playtest (`F5`): the genuine game, in the tab
+
+- **How:** the editor embeds **js-dos (DOSBox compiled to WebAssembly)**. On `F5` it compiles
+  the current document in-memory, mounts a virtual drive containing the user's game directory
+  with the compiled `GAMEMAPS`/`MAPHEAD`/`VSWAP`/`VGAGRAPH`/`VGAHEAD`/`VGADICT` overlaid, and
+  boots `WOLF3D.EXE`. This is **zero behavioral approximation** — guard AI, sound zones,
+  pushwall physics, score screens, even the version's bugs are exactly real, because it *is* the
+  real engine running the bytes the editor just wrote.
+- **The executable comes from the user's own game directory** (the shareware download includes
+  `WOLF3D.EXE`; registered/SOD users already have theirs) — consistent with the "no id assets
+  shipped, nothing leaves the tab" rules. The emulator runtime (GPL DOSBox/js-dos) is bundled
+  with the app and served statically.
+- **Warp-to-level:** the game's own command line does the work — `WOLF3D.EXE TEDLEVEL <n>`
+  (n = episode×10 + floor) jumps straight into the level being edited, skipping all menus, with
+  skill selected by an extra `baby|easy|normal|hard` parameter. This is the launch-from-TED5
+  hook id left in the engine (`tedlevel` in `ID_US_1.C`/`WL_MAIN.C`) — "playtest this floor" is
+  one keypress from cursor to gameplay, the same loop id's own designers used.
+- Playtest panel conveniences: skill picker, restart, "playtest from current 3D-preview
+  position" (best-effort via tedlevel + a generated temporary start), per-session DOSBox config
+  (cycles, sound on/off), and a capture button (canvas screenshot → PNG for sharing).
+- **Fallback/alternative target:** an Emscripten build of **Wolf4SDL or ECWolf** as a second
+  playtest engine for source-port profiles (better speed, no EXE needed if the port permits) —
+  planned as an M8 option; js-dos vanilla is the fidelity baseline and ships first.
 
 ---
 
@@ -603,9 +689,10 @@ profile swaps in its boss/static set without code changes.
      re-encode and re-decode to identical planes; whole-file rewrite preserves untouched chunks
      bit-exact.
 2. **In-game acceptance:** CI artifact "smoke mod" — a generated test level exercising every
-   door type, pushwalls, deaf guards, secret elevator, each enemy class at each skill —
-   hand-verified in DOSBox (vanilla 1.4) and ECWolf at each milestone; scripted load check via
-   Wolf4SDL headless build if practical.
+   door type, pushwalls, deaf guards, secret elevator, each enemy class at each skill — booted
+   in the embedded js-dos playtest (§9.2) by an automated Playwright run that asserts the game
+   reaches gameplay (frame-hash heuristic on the canvas after `tedlevel` warp); hand-verified in
+   vanilla DOSBox 1.4 and ECWolf at each milestone.
 3. **Editor logic:** unit tests for code-computation (skill/facing → object code matrix from
    Appendix B as the fixture), paste rotation remaps, flood fills, validator rules (each rule
    gets a minimal fixture level that triggers it and one that doesn't).
@@ -614,7 +701,8 @@ profile swaps in its boss/static set without code changes.
    self-contained. Registered `*.WL6` tests run locally only, keyed to files the developer
    provides.
 5. **UI smoke tests:** Playwright flows — open shareware dir, edit E1L1, save, byte-compare
-   expectations; pixel-edit a wall, compile, decode and compare.
+   expectations; pixel-edit a wall, compile, decode and compare; import a mod ZIP, "Download
+   mod", and re-import the result (export/import round trip).
 
 ---
 
@@ -627,9 +715,11 @@ Ordered so that every milestone ends with something a mapper could actually use.
 - **M1 — Map viewer.** Load a game dir; browse all levels; composited plane rendering with real
   VSWAP wall textures (read-only VSWAP decode: walls + sprites for icons); hover readout; level
   list. *Exit:* E1L1 looks like the MapEdit screenshots, every code identified.
-- **M2 — Editing core.** Tools (stamp/line/rect/fill/select/paste), LMB/RMB model, undo/redo,
-  save in direct mode with backups. *Exit:* author a new playable level start-to-finish; it runs
-  in DOSBox and ECWolf.
+- **M2 — Editing core + playtest loop.** Tools (stamp/line/rect/fill/select/paste), LMB/RMB
+  model, undo/redo, save in direct mode with backups, ZIP/file import and "Download mod" export
+  (§6.3), and the embedded js-dos playtest with `tedlevel` warp (§9.2). *Exit:* author a new
+  level start-to-finish and play it with `F5` without leaving the tab; the exported ZIP runs in
+  desktop DOSBox and ECWolf.
 - **M3 — Faithful UX layer.** Floor-code layer + room fills (`Z`/`Alt+Z`/`Ctrl+Z`), enemy
   skill/facing/mode toolbar with code computation, patrol tracing, difficulty filter, door/
   pushwall/elevator affordances, statistics panel, MapEdit keymap (Appendix F), find & replace.
@@ -638,7 +728,7 @@ Ordered so that every milestone ends with something a mapper could actually use.
   (fixture levels per rule).
 - **M5 — VSWAP studio.** Write-capable VSWAP; wall pair editor with auto-darken and tiling
   preview; sprite editor with animation manifest, onion skin, post compiler with page-budget
-  meter; PNG sheet import/export. *Exit:* reskin a guard and a wall, see them in DOSBox.
+  meter; PNG sheet import/export. *Exit:* reskin a guard and a wall, `F5`, see them in-game.
 - **M6 — VGAGRAPH studio.** Huffman codec; pictable-aware pic editor with status-bar/menu
   context previews; font editor; TILE8; endscreen editor; demo preservation/strip. *Exit:* custom
   title screen + status bar + menu font running in-game.
@@ -646,7 +736,8 @@ Ordered so that every milestone ends with something a mapper could actually use.
   difficulty-filtered actor display.
 - **M8 — Project mode & interop.** WDC-style base/output compile workflow; single-level
   import/export incl. MapEdit floor-file format; SOD/SDM profiles end-to-end; Spear catalog
-  (Appendix B SOD deltas); polish, docs, sample freely-licensed asset pack for from-scratch mods.
+  (Appendix B SOD deltas); optional Wolf4SDL/ECWolf-WASM playtest engine; PWA offline install;
+  polish, docs, sample freely-licensed asset pack for from-scratch mods.
 - **M9 (stretch) — Audio.** AUDIOT/AUDIOHED (AdLib/PC-speaker/IMF) and VSWAP digitized sound
   replacement — completing WDC-class "all-in-one" coverage.
 
@@ -661,7 +752,9 @@ Ordered so that every milestone ends with something a mapper could actually use.
 | **Version drift** (v1.0 RLEW-only maps, WL1/WL3/WL6/SOD VGAGRAPH chunk-count differences) | Detection heuristics + explicit per-profile manifests generated from id's `GFXV_*.H`; never hardcode chunk numbers in app code |
 | **Sprite repack overruns** (packed sprite > page budget) | Live size meter, encoder optimizes post layout, hard warning at 4096 bytes; verify the exact vanilla page constraint against `ID_PM.C` during M5 and encode it in profiles |
 | **Corrupting user mods** (ChaosEdit's reputation) | Untouched-chunk byte preservation, automatic rotating backups, atomic file writes (write-temp-rename), aggressive round-trip tests |
-| **Scope creep toward a game engine** | The 3D preview deliberately omits AI/combat; "real testing" is a documented one-keystroke DOSBox/ECWolf loop |
+| **Scope creep toward a game engine** | The 3D preview deliberately omits AI/combat; real testing is the embedded real engine (`F5` js-dos playtest), so there is never a reason to grow the preview into an engine |
+| **Playtest emulator integration** (js-dos API churn, audio/pointer-lock permissions, performance on low-end devices) | Pin a vetted js-dos release and wrap it behind a thin harness interface; playtest is additive — editing and export never depend on it; document the desktop DOSBox loop as the escape hatch |
+| **Browser storage/API variance** (File System Access unavailable in Firefox/Safari) | Every workflow has an upload/download + OPFS path (§6.3); FS Access is an enhancement, not a requirement |
 | **Fidelity erosion by convenience features** | Every UX nicety (auto-orientation, code computation, scaffolds) must reduce to plain plane values with no editor-only state; the saved file is always the single source of truth |
 
 ---
