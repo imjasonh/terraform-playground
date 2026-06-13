@@ -42,13 +42,27 @@ export function Preview3D() {
         const sin = Math.sin(caster.angle);
         caster.move((cos * fwd - sin * strafe) * speed, (sin * fwd + cos * strafe) * speed);
       }
+      caster.update(dt);
       caster.render(img);
       ctx.putImageData(img, 0, 0);
+      if (caster.message) {
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(0,0,0,.6)';
+        ctx.fillRect(0, 4, caster.width, 12);
+        ctx.fillStyle = '#ffd24a';
+        ctx.fillText(caster.message, caster.width / 2, 13);
+      }
       st.raf = requestAnimationFrame(frame);
     };
     st.raf = requestAnimationFrame(frame);
 
     const down = (e) => {
+      if (e.code === 'Space') {
+        caster.use();
+        e.preventDefault();
+        return;
+      }
       st.keys.add(e.code);
       if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
     };
@@ -79,8 +93,8 @@ export function Preview3D() {
         onClick={(e) => e.currentTarget.requestPointerLock()}
       />
       <div style={{ color: 'var(--dim)', fontSize: 11 }}>
-        Click to mouse-look · WASD move · Q/E strafe · Shift run — preview only (doors stay shut; press F5 to playtest the real
-        game)
+        Click to mouse-look · WASD move · Q/E strafe · Space opens doors · Shift run — editor preview; press F5 to playtest
+        the real game
       </div>
     </div>
   );

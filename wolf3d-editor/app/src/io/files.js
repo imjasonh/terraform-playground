@@ -102,17 +102,21 @@ export async function loadFromDirectory() {
 }
 
 /**
- * Load the bundled shareware demo data (served from /demo).
+ * Load the bundled shareware demo (served from /demo), including the game
+ * EXE so the in-browser playtest works with no setup.
  * @returns {Promise<GameFiles>}
  */
 export async function loadDemo() {
-  const names = ['maphead', 'gamemaps', 'vswap', 'vgadict', 'vgahead', 'vgagraph', 'audiohed', 'audiot'];
+  const names = [
+    'maphead.wl1', 'gamemaps.wl1', 'vswap.wl1', 'vgadict.wl1', 'vgahead.wl1', 'vgagraph.wl1',
+    'audiohed.wl1', 'audiot.wl1', 'wolf3d.exe',
+  ];
   /** @type {{name: string, data: Uint8Array}[]} */
   const flat = [];
   for (const n of names) {
-    const res = await fetch(`${import.meta.env.BASE_URL}demo/${n}.wl1`);
-    if (!res.ok) throw new Error(`demo file missing: ${n}.wl1`);
-    flat.push({ name: `${n}.wl1`, data: new Uint8Array(await res.arrayBuffer()) });
+    const res = await fetch(`${import.meta.env.BASE_URL}demo/${n}`);
+    if (!res.ok) throw new Error(`demo file missing: ${n}`);
+    flat.push({ name: n, data: new Uint8Array(await res.arrayBuffer()) });
   }
   return collectGameFiles(flat);
 }

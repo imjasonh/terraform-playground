@@ -67,9 +67,9 @@ export function Playtest() {
       </div>
       {!exe && (
         <div style={{ padding: 16, color: 'var(--warn)' }}>
-          No game executable found. To playtest in the browser, open a game folder that includes the game EXE
-          (e.g. WOLF3D.EXE — the shareware download includes it). The editor's compiled files are overlaid onto your
-          folder automatically. Without an EXE you can still use "Download mod" and run it in DOSBox yourself.
+          No game executable found among the loaded files. Open a game folder that includes the game EXE (e.g.
+          WOLF3D.EXE), or use the bundled shareware demo, which is fully playable. The editor's compiled files are
+          overlaid automatically. Without an EXE you can still use "Download mod" and run it in DOSBox yourself.
         </div>
       )}
       {error && <div style={{ padding: 12, color: 'var(--danger)' }}>{error}</div>}

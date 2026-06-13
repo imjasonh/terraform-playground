@@ -1,6 +1,7 @@
 // Software raycaster for the 3D preview: classic DDA over the 64x64 tile
-// grid, light/dark wall pairs per face, billboard sprites, solid
-// floor/ceiling colors — the same rendering model as WL_DRAW.C.
+// grid, light/dark wall pairs per face, sliding doors with jamb faces,
+// billboard sprites, solid floor/ceiling colors — the same rendering model
+// as WL_DRAW.C.
 
 import { MAP_WIDTH, WOLF_PALETTE, WALL_SIZE } from '@wolf3d/codec';
 import { isDoor, isFloorCode, AMBUSH_TILE, DOORS, STATICS, DEAD_GUARD, BOSSES, GHOSTS } from '@wolf3d/data';
@@ -29,6 +30,20 @@ export class Raycaster {
     this.width = 320;
     this.height = 200;
     this.zbuffer = new Float32Array(this.width);
+    /** Door states, keyed by tile index.
+     * @type {Map<number, {vertical: boolean, openness: number, state: 'closed'|'opening'|'open'|'closing', timer: number}>} */
+    this.doors = new Map();
+    for (let i = 0; i < level.plane0.length; i++) {
+      const t = level.plane0[i];
+      if (isDoor(t)) {
+        // Even codes (90, 92, ...) are "vertical" doors: the slab runs N-S
+        // (plane x = tile + 0.5); odd codes run E-W (plane y = tile + 0.5).
+        this.doors.set(i, { vertical: t % 2 === 0, openness: 0, state: 'closed', timer: 0 });
+      }
+    }
+    /** @type {string|null} transient HUD message (e.g. door feedback) */
+    this.message = null;
+    this.messageTimer = 0;
     // Find player start.
     this.x = 32.5;
     this.y = 32.5;
@@ -75,13 +90,74 @@ export class Raycaster {
   /** Can the player occupy (x, y)? */
   walkable(x, y) {
     const t = this.tileAt(x, y);
-    if (isSolid(t) && !isDoor(t)) return false;
-    if (isDoor(t)) return false; // doors stay closed in the preview; use the playtest for real play
+    if (isDoor(t)) {
+      const door = this.doors.get(Math.floor(y) * MAP_WIDTH + Math.floor(x));
+      return !!door && door.openness > 0.85;
+    }
+    if (isSolid(t)) return false;
     // Blocking statics.
     const o = this.level.plane1[Math.floor(y) * MAP_WIDTH + Math.floor(x)];
     const st = STATICS.find((s) => s.code === o);
     if (st && st.kind === 'block') return false;
     return true;
+  }
+
+  /**
+   * Use key (Space): operate the door directly ahead, like the engine's
+   * Cmd_Use. Locked doors open too — the preview has no inventory.
+   */
+  use() {
+    const cos = Math.cos(this.angle);
+    const sin = Math.sin(this.angle);
+    // Check the facing-adjacent tile (dominant axis, like CheckAction).
+    const tx = Math.floor(this.x) + (Math.abs(cos) > Math.abs(sin) ? Math.sign(cos) : 0);
+    const ty = Math.floor(this.y) + (Math.abs(cos) > Math.abs(sin) ? 0 : Math.sign(sin));
+    const idx = ty * MAP_WIDTH + tx;
+    const door = this.doors.get(idx);
+    if (!door) return;
+    if (door.state === 'closed' || door.state === 'closing') {
+      door.state = 'opening';
+      const code = this.level.plane0[idx];
+      const lock = code >= 92 && code <= 99 ? 'locked (opens freely in preview)' : null;
+      this.setMessage(lock ?? 'door opened');
+    } else {
+      // Don't slam a door on the player.
+      if (Math.floor(this.x) !== tx || Math.floor(this.y) !== ty) door.state = 'closing';
+    }
+  }
+
+  /** @param {string} text */
+  setMessage(text) {
+    this.message = text;
+    this.messageTimer = 2;
+  }
+
+  /**
+   * Advance door animations and timers.
+   * @param {number} dt seconds
+   */
+  update(dt) {
+    const DOOR_SPEED = 1 / 0.85; // fully open in ~0.85s, close to the original
+    for (const [idx, door] of this.doors) {
+      if (door.state === 'opening') {
+        door.openness = Math.min(1, door.openness + dt * DOOR_SPEED);
+        if (door.openness === 1) {
+          door.state = 'open';
+          door.timer = 0;
+        }
+      } else if (door.state === 'open') {
+        door.timer += dt;
+        const playerInside = Math.floor(this.x) + Math.floor(this.y) * MAP_WIDTH === idx;
+        if (door.timer > 4 && !playerInside) door.state = 'closing';
+      } else if (door.state === 'closing') {
+        door.openness = Math.max(0, door.openness - dt * DOOR_SPEED);
+        if (door.openness === 0) door.state = 'closed';
+      }
+    }
+    if (this.messageTimer > 0) {
+      this.messageTimer -= dt;
+      if (this.messageTimer <= 0) this.message = null;
+    }
   }
 
   /**
@@ -141,6 +217,11 @@ export class Raycaster {
       let hit = 0;
       let side = 0; // 0 = x-side (E/W face -> dark), 1 = y-side (N/S face -> light)
       let guard = 0;
+      let rawDist = 0; // unprojected distance along the ray to the hit
+      let texX = 0;
+      let texPixels = null;
+      let cameFromDoor = false;
+
       while (!hit && guard++ < 256) {
         if (sideX < sideY) {
           sideX += deltaX;
@@ -152,39 +233,86 @@ export class Raycaster {
           side = 1;
         }
         const t = this.tileAt(mapX, mapY);
-        if ((t >= 1 && t < 106 && !isFloorCode(t) && t !== AMBUSH_TILE) || isDoor(t)) hit = t;
+
+        if (isDoor(t)) {
+          // Recessed sliding slab on the tile's center line.
+          const door = this.doors.get(mapY * MAP_WIDTH + mapX);
+          if (!door) continue;
+          let planeDist;
+          let frac; // position along the slab, 0..1
+          if (door.vertical) {
+            planeDist = (mapX + 0.5 - this.x) / (cos || 1e-9);
+            const hitY = this.y + planeDist * sin;
+            if (Math.floor(hitY) !== mapY) {
+              cameFromDoor = true;
+              continue; // ray slips past the slab into the jamb gap
+            }
+            frac = hitY - mapY;
+          } else {
+            planeDist = (mapY + 0.5 - this.y) / (sin || 1e-9);
+            const hitX = this.x + planeDist * cos;
+            if (Math.floor(hitX) !== mapX) {
+              cameFromDoor = true;
+              continue;
+            }
+            frac = hitX - mapX;
+          }
+          if (planeDist <= 0) {
+            cameFromDoor = true;
+            continue;
+          }
+          // The door slides sideways into the jamb; only frac >= openness
+          // is still covered by the slab.
+          if (frac < door.openness) {
+            cameFromDoor = true;
+            continue;
+          }
+          hit = t;
+          rawDist = planeDist;
+          const doorInfo = DOORS.find((d) => d.code === t);
+          const kind = doorInfo && doorInfo.lock === 5 ? 2 : doorInfo && doorInfo.lock > 0 ? 3 : 0;
+          // Door faces use the light/dark pair to match the slab orientation.
+          texPixels = this.assets.wallPixelsAt(this.assets.doorWallBase + kind * 2 + (door.vertical ? 1 : 0));
+          texX = Math.min(WALL_SIZE - 1, Math.floor((frac - door.openness) * WALL_SIZE));
+          break;
+        }
+
+        if (t >= 1 && t < 106 && !isFloorCode(t) && t !== AMBUSH_TILE) {
+          hit = t;
+          rawDist = side === 0 ? sideX - deltaX : sideY - deltaY;
+          // Walls adjacent to a door tile show the jamb texture on the face
+          // inside the doorway, like the engine's DOORWALL handling.
+          if (cameFromDoor) {
+            texPixels = this.assets.wallPixelsAt(this.assets.doorWallBase + 2 + (side === 0 ? 1 : 0));
+          } else {
+            texPixels = this.assets.wallPixelsAt((t - 1) * 2 + (side === 0 ? 1 : 0));
+          }
+          let wallX = side === 0 ? this.y + rawDist * sin : this.x + rawDist * cos;
+          wallX -= Math.floor(wallX);
+          texX = Math.floor(wallX * WALL_SIZE);
+          if ((side === 0 && cos > 0) || (side === 1 && sin < 0)) texX = WALL_SIZE - texX - 1;
+          break;
+        }
+
+        cameFromDoor = false;
       }
       if (!hit) {
         this.zbuffer[col] = Infinity;
         continue;
       }
 
-      const dist = Math.max(
-        0.01,
-        (side === 0 ? sideX - deltaX : sideY - deltaY) * Math.cos(rayAngle - this.angle),
-      );
+      const dist = Math.max(0.01, rawDist * Math.cos(rayAngle - this.angle));
       this.zbuffer[col] = dist;
-      const wallHeight = Math.min(height * 8, Math.floor(height / dist));
-      const drawStart = Math.max(0, Math.floor(half - wallHeight / 2));
+      const wallHeight = height / dist;
+      const wallTop = half - wallHeight / 2; // exact, unrounded
+      const drawStart = Math.max(0, Math.ceil(wallTop));
       const drawEnd = Math.min(height - 1, Math.floor(half + wallHeight / 2));
 
-      // Texture pick: light face for N/S (side 1), dark for E/W (side 0).
-      let texPixels = null;
-      if (isDoor(hit)) {
-        const door = DOORS.find((d) => d.code === hit);
-        const kind = door && door.lock === 5 ? 2 : door && door.lock > 0 ? 3 : 0;
-        texPixels = this.assets.wallPixelsAt(this.assets.doorWallBase + kind * 2 + (side === 0 ? 1 : 0));
-      } else {
-        texPixels = this.assets.wallPixelsAt((hit - 1) * 2 + (side === 0 ? 1 : 0));
-      }
-
-      let wallX = side === 0 ? this.y + dist * sin : this.x + dist * cos;
-      wallX -= Math.floor(wallX);
-      let texX = Math.floor(wallX * WALL_SIZE);
-      if ((side === 0 && cos > 0) || (side === 1 && sin < 0)) texX = WALL_SIZE - texX - 1;
-
       for (let y = drawStart; y <= drawEnd; y++) {
-        const texY = Math.floor(((y - (half - wallHeight / 2)) / wallHeight) * WALL_SIZE) & 63;
+        // Clamp instead of wrapping: rounding at the slice edges must not
+        // sample the opposite edge of the texture (caused dashed-line
+        // artifacts along the tops of walls).
+        const texY = Math.min(WALL_SIZE - 1, Math.max(0, Math.floor(((y + 0.5 - wallTop) / wallHeight) * WALL_SIZE)));
         let r = 90;
         let g = 90;
         let b = 90;

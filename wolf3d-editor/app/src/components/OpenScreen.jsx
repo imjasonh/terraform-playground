@@ -107,7 +107,7 @@ export function OpenScreen() {
           </label>
           {'showDirectoryPicker' in window && <button onClick={onPickDir}>Open game folder…</button>}
           <button onClick={onDemo} disabled={busy}>
-            {busy ? 'Loading…' : 'Open shareware demo (E1)'}
+            {busy ? 'Loading…' : 'Open shareware demo (E1, playable)'}
           </button>
         </div>
       </div>

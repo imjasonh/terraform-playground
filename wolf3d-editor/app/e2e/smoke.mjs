@@ -80,10 +80,12 @@ await page.waitForTimeout(400);
 await page.screenshot({ path: '/tmp/shot-gfx.png' });
 console.log('gfx studio ok');
 
-// Playtest panel (no EXE in demo -> guidance text)
+// Playtest panel: demo bundles the shareware EXE, so Boot must be enabled.
 await page.click('button:has-text("Playtest")');
-await page.waitForSelector('text=No game executable found');
-console.log('playtest guidance ok');
+await page.waitForSelector('button:has-text("Boot game")');
+const bootDisabled = await page.$eval('button:has-text("Boot game")', (b) => b.disabled);
+if (bootDisabled) throw new Error('Boot game disabled — demo EXE not detected');
+console.log('playtest boot available ok');
 
 // Back to map; check map screenshot non-empty
 await page.click('button:has-text("Map")');

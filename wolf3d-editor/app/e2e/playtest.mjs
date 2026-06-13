@@ -5,8 +5,8 @@ import { chromium } from 'playwright-core';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const WOLF_DIR = process.env.WOLF_DIR;
-if (!WOLF_DIR) throw new Error('set WOLF_DIR to a folder containing WOLF3D.EXE + .WL1 files');
+// Without WOLF_DIR, the bundled shareware demo (which includes the EXE) is used.
+const WOLF_DIR = process.env.WOLF_DIR ?? null;
 const OUT = process.env.TOUR_OUT ?? '/tmp/tour';
 fs.mkdirSync(OUT, { recursive: true });
 
@@ -23,11 +23,16 @@ page.on('pageerror', (e) => console.log('pageerror:', String(e).slice(0, 200)));
 await page.goto(process.env.SMOKE_URL ?? 'http://localhost:4173/');
 await page.waitForSelector('text=WOLF3D EDITOR');
 
-// Load the full shareware install (with EXE) through the file input.
-const files = fs.readdirSync(WOLF_DIR).map((f) => path.join(WOLF_DIR, f));
-await page.setInputFiles('input[type=file]', files);
+if (WOLF_DIR) {
+  // Load a full game install (with EXE) through the file input.
+  const files = fs.readdirSync(WOLF_DIR).map((f) => path.join(WOLF_DIR, f));
+  await page.setInputFiles('input[type=file]', files);
+  console.log('game folder loaded (incl. EXE)');
+} else {
+  await page.click('text=Open shareware demo');
+  console.log('bundled demo loaded');
+}
 await page.waitForSelector('text=STATISTICS');
-console.log('game folder loaded (incl. EXE)');
 
 // Open playtest, boot warped to E1L1 on normal.
 await page.click('button:has-text("Playtest")');
