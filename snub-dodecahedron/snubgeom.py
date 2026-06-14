@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["numpy>=1.24", "scipy>=1.10"]
+# ///
 """
 Exact geometry of the snub dodecahedron (an Archimedean solid).
 

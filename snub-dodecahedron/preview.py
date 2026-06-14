@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["numpy>=1.24", "scipy>=1.10"]
+# ///
 """Render an SVG preview of the unfolded net(s) and verify no faces overlap."""
 
 from __future__ import annotations

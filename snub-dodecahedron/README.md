@@ -65,26 +65,33 @@ coplanar and glue flush at the correct angle.
 
 ## Requirements
 
+This project is run with [uv](https://docs.astral.sh/uv/). The Python scripts
+carry [inline dependency metadata (PEP 723)](https://docs.astral.sh/uv/guides/scripts/),
+so `uv run` automatically creates an isolated environment with `numpy`/`scipy`
+on first use — there is nothing to install manually.
+
 ```bash
-pip install numpy scipy        # geometry + convex hull
+# install uv (see https://docs.astral.sh/uv/getting-started/installation/)
+curl -LsSf https://astral.sh/uv/install.sh | sh    # or: pip install uv
+
 # OpenSCAD is only needed to render STLs (the .scad is written regardless)
-sudo apt-get install openscad  # or download from https://openscad.org
+sudo apt-get install openscad                      # or https://openscad.org
 ```
 
 ## Usage
 
 ```bash
 # default: 30 mm edges, 3 mm thick, single net, writes out/snub_net.scad + preview
-python3 generate.py
+uv run generate.py
 
 # pick your own size/depth and also render an STL
-python3 generate.py --edge 35 --depth 4 --web 0.6 --slack 6 --stl
+uv run generate.py --edge 35 --depth 4 --web 0.6 --slack 6 --stl
 
 # split into smaller pieces (≤ 20 faces each) for easier printing/handling
-python3 generate.py --max-faces-per-piece 20 --stl
+uv run generate.py --max-faces-per-piece 20 --stl
 
 # also export the target solid as a reference model
-python3 generate.py --solid
+uv run generate.py --solid
 ```
 
 Open the generated `.scad` in OpenSCAD (or use `--stl`) to get a mesh, then
@@ -140,6 +147,6 @@ angles matching the known 164.175° / 152.930°. The unfolder additionally runs
 an independent SAT overlap check to confirm no two faces overlap in the layout.
 
 ```bash
-python3 snubgeom.py     # prints the verified geometry stats
-python3 preview.py      # writes net_preview.svg, reports overlapping pairs (0)
+uv run snubgeom.py     # prints the verified geometry stats
+uv run preview.py      # writes net_preview.svg, reports overlapping pairs (0)
 ```

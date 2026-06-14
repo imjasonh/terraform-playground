@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["numpy>=1.24", "scipy>=1.10"]
+# ///
 """
 Generate a foldable, beveled snub-dodecahedron net as OpenSCAD (+ optional STL).
 
 Example:
-    python3 generate.py --edge 30 --depth 3 --web 0.6 --slack 6 --stl
+    uv run generate.py --edge 30 --depth 3 --web 0.6 --slack 6 --stl
 
 The output is a flat plate you print, then fold along the grooved hinges and
 glue the seams to obtain a snub dodecahedron.  See README.md for details.
