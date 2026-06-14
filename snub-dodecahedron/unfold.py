@@ -204,8 +204,9 @@ class Unfolder:
             best = M
         return best, edge2, dih
 
-    def unfold(self, root_face=None):
+    def unfold(self, root_face=None, max_faces_per_piece=None):
         n_faces = len(self.s.faces)
+        cap = max_faces_per_piece or n_faces
         # prefer to start pieces on pentagons (nice clusters of 5 triangles)
         order = sorted(range(n_faces), key=lambda f: (len(self.s.faces[f]) != 5, f))
         if root_face is not None:
@@ -233,9 +234,11 @@ class Unfolder:
 
             # grow piece maximally with repeated passes
             changed = True
-            while changed:
+            while changed and len(piece_faces) < cap:
                 changed = False
                 for f in list(piece_faces.keys()):
+                    if len(piece_faces) >= cap:
+                        break
                     for nb, edge in self.adj[f]:
                         if nb not in unplaced:
                             continue
