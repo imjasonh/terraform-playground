@@ -38,7 +38,7 @@ def verify_no_overlap(pieces):
     return bad
 
 
-def write_svg(pieces, path, scale=40.0, gap=1.5, magnet_radius=0.0):
+def write_svg(pieces, path, scale=40.0, gap=1.5, magnet_radius=0.0, bed_units=None):
     offsets = layout_pieces(pieces, gap=gap)
     # global bbox
     minx = miny = 1e9
@@ -66,6 +66,16 @@ def write_svg(pieces, path, scale=40.0, gap=1.5, magnet_radius=0.0):
         f'<rect width="{W:.0f}" height="{H:.0f}" fill="white"/>',
     ]
     for p, (ox, oy) in zip(pieces, offsets):
+        if bed_units is not None:
+            x0, y0, x1, y1 = p.bbox()
+            ccx, ccy = (x0 + x1) / 2 + ox, (y0 + y1) / 2 + oy
+            bw, bh = bed_units
+            rx, ry = X(ccx - bw / 2), Y(ccy + bh / 2)
+            out.append(
+                f'<rect x="{rx:.2f}" y="{ry:.2f}" width="{bw * scale:.2f}" '
+                f'height="{bh * scale:.2f}" fill="none" stroke="#d33" '
+                f'stroke-width="1.0" stroke-dasharray="6,4"/>'
+            )
         for fi, poly in p.faces:
             pts = " ".join(f"{X(x + ox):.2f},{Y(y + oy):.2f}" for x, y in poly)
             fill = "#ffe9b3" if len(poly) == 5 else "#cfe8ff"

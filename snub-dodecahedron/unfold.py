@@ -50,6 +50,7 @@ class Piece:
     faces: list = field(default_factory=list)
     hinges: list = field(default_factory=list)
     boundary: list = field(default_factory=list)
+    rotation_deg: float = 0.0  # orientation baked in to fit the print bed
 
     def bbox(self):
         xs, ys = [], []
@@ -132,6 +133,38 @@ def _shrink(poly, factor):
     return [tuple(c + (np.array(p) - c) * (1 - factor)) for p in poly]
 
 
+def _fits_bed(points, bw, bh, step_deg=2):
+    """Find an orientation in which `points` fit inside a bw x bh rectangle.
+
+    Returns (ok, angle_deg, w, h). When nothing fits, ok is False and the
+    returned angle minimises the larger side (best effort).
+    """
+    pts = np.asarray(points, float)
+    best_fit = None  # (slack, deg, w, h)
+    best_any = None  # (maxside, deg, w, h)
+    for deg in range(0, 90, step_deg):
+        a = math.radians(deg)
+        c, s = math.cos(a), math.sin(a)
+        x = pts[:, 0] * c - pts[:, 1] * s
+        y = pts[:, 0] * s + pts[:, 1] * c
+        w = float(x.max() - x.min())
+        h = float(y.max() - y.min())
+        ms = max(w, h)
+        if best_any is None or ms < best_any[0]:
+            best_any = (ms, deg, w, h)
+        if w <= bw and h <= bh:
+            slack = min(bw - w, bh - h)
+            if best_fit is None or slack > best_fit[0]:
+                best_fit = (slack, deg, w, h)
+    if best_fit is not None:
+        return True, best_fit[1], best_fit[2], best_fit[3]
+    return False, best_any[1], best_any[2], best_any[3]
+
+
+def _rotate_xy(pt, c, s):
+    return (pt[0] * c - pt[1] * s, pt[0] * s + pt[1] * c)
+
+
 def _convex_overlap(poly_a, poly_b):
     """SAT overlap test for two convex polygons (True if they overlap)."""
     for poly in (poly_a, poly_b):
@@ -208,9 +241,16 @@ class Unfolder:
             best = M
         return best, edge2, dih
 
-    def unfold(self, root_face=None, max_faces_per_piece=None):
+    def unfold(self, root_face=None, max_faces_per_piece=None, bed=None):
+        """Unfold into flat pieces.
+
+        max_faces_per_piece : cap each piece's face count.
+        bed : (width, height) in edge-length units; pieces are kept (in their
+              best rotation) within this rectangle.
+        """
         n_faces = len(self.s.faces)
         cap = max_faces_per_piece or n_faces
+        bw, bh = bed if bed else (None, None)
         # prefer to start pieces on pentagons (nice clusters of 5 triangles)
         order = sorted(range(n_faces), key=lambda f: (len(self.s.faces[f]) != 5, f))
         if root_face is not None:
@@ -235,6 +275,7 @@ class Unfolder:
             piece_faces[seed] = poly
             piece_of[seed] = pidx
             unplaced.discard(seed)
+            piece_points = list(poly)
 
             # grow piece maximally with repeated passes
             changed = True
@@ -244,6 +285,8 @@ class Unfolder:
                     if len(piece_faces) >= cap:
                         break
                     for nb, edge in self.adj[f]:
+                        if len(piece_faces) >= cap:
+                            break
                         if nb not in unplaced:
                             continue
                         M_child, edge2, dih = self._child_matrix(
@@ -260,11 +303,16 @@ class Unfolder:
                                 break
                         if overlap:
                             continue
+                        if bed is not None:
+                            ok, *_ = _fits_bed(piece_points + list(cand), bw, bh)
+                            if not ok:
+                                continue
                         placed_M[nb] = M_child
                         placed_poly[nb] = cand
                         piece_faces[nb] = cand
                         piece_of[nb] = pidx
                         unplaced.discard(nb)
+                        piece_points.extend(cand)
                         hinge_records.append((pidx, f, nb, edge2, dih))
                         changed = True
 
@@ -317,9 +365,71 @@ class Unfolder:
                     piece.boundary.append(
                         Boundary(p2, q2, dih, tuple(inward), kind)
                     )
+
+            if bed is not None:
+                pts = [p for _, poly in piece.faces for p in poly]
+                _, deg, _, _ = _fits_bed(pts, bw, bh)
+                self._rotate_piece(piece, deg)
             result.append(piece)
 
         return result
+
+    @staticmethod
+    def _rotate_piece(piece, deg):
+        if not deg:
+            return
+        a = math.radians(deg)
+        c, s = math.cos(a), math.sin(a)
+        piece.rotation_deg = deg
+        piece.faces = [
+            (fi, [_rotate_xy(p, c, s) for p in poly]) for fi, poly in piece.faces
+        ]
+        piece.hinges = [
+            Hinge(_rotate_xy(h.p, c, s), _rotate_xy(h.q, c, s), h.dihedral, h.kind)
+            for h in piece.hinges
+        ]
+        piece.boundary = [
+            Boundary(
+                _rotate_xy(b.p, c, s),
+                _rotate_xy(b.q, c, s),
+                b.dihedral,
+                _rotate_xy(b.inward, c, s),
+                b.kind,
+            )
+            for b in piece.boundary
+        ]
+
+    def unfold_for_bed(self, bed):
+        """Partition into the fewest, roughly balanced pieces that fit `bed`.
+
+        `bed` is (width, height) in edge-length units. The number of faces a
+        single piece can hold is capped by the bed; varying that cap trades
+        piece count against balance in a non-monotonic way, so we scan every
+        cap and pick the result with (1) the fewest pieces and, among those,
+        (2) the most even face distribution.
+        """
+        n = len(self.s.faces)
+        bw, bh = bed
+
+        # bed must hold at least the largest single face
+        lone = self.unfold(bed=bed, max_faces_per_piece=1)
+        for p in lone:
+            pts = [pt for _, poly in p.faces for pt in poly]
+            ok, *_ = _fits_bed(pts, bw, bh)
+            if not ok:
+                raise ValueError(
+                    "bed is too small for even one face; "
+                    "reduce --edge or enlarge --bed"
+                )
+
+        best = None  # (score_tuple, pieces)
+        for cap in range(1, n + 1):
+            pieces = self.unfold(bed=bed, max_faces_per_piece=cap)
+            sizes = sorted(len(p.faces) for p in pieces)
+            score = (len(pieces), sizes[-1] - sizes[0], sizes[-1])
+            if best is None or score < best[0]:
+                best = (score, pieces)
+        return best[1]
 
 
 if __name__ == "__main__":

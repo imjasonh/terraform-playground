@@ -22,9 +22,25 @@ import subprocess
 import sys
 
 from preview import verify_no_overlap, write_svg
-from scadgen import FoldParams, generate_scad
+from scadgen import FoldParams, generate_scad, generate_scad_single
 from snubgeom import SnubDodecahedron
-from unfold import Unfolder
+from unfold import Unfolder, _fits_bed
+
+
+def parse_bed(spec):
+    """Parse a bed spec like '7x7in', '7in', '180x180', '180' -> (w_mm, h_mm).
+
+    Values are millimetres unless the spec contains 'in' or '\"' (inches),
+    in which case the unit applies to the whole spec.
+    """
+    s = spec.strip().lower().replace('"', "in")
+    inch = "in" in s
+    s = s.replace("in", "")
+    vals = [float(p) for p in s.split("x")]
+    if len(vals) == 1:
+        vals = [vals[0], vals[0]]
+    f = 25.4 if inch else 1.0
+    return vals[0] * f, vals[1] * f
 
 
 def main(argv=None):
@@ -45,6 +61,11 @@ def main(argv=None):
                     help="magnet pocket depth, mm (default 1.5875 = 1/16 in)")
     ap.add_argument("--no-magnets", action="store_true",
                     help="do not pocket magnet holes in the faces")
+    ap.add_argument("--bed", type=str, default=None,
+                    help="print-bed size, e.g. '7x7in' or '180x180' (mm). "
+                         "Splits into the fewest balanced pieces that fit.")
+    ap.add_argument("--bed-margin", type=float, default=5.0,
+                    help="keep pieces this far inside each bed edge, mm (default 5)")
     ap.add_argument("--max-faces-per-piece", type=int, default=None,
                     help="split the net into smaller pieces of at most N faces")
     ap.add_argument("--no-boundary-bevel", action="store_true",
@@ -67,8 +88,25 @@ def main(argv=None):
           f"({info['pentagons']} pentagons + {info['triangles']} triangles), "
           f"dihedrals 3-3={info['dihedral_3_3']:.3f} 3-5={info['dihedral_3_5']:.3f}")
 
-    print("unfolding into a flat net ...")
-    pieces = Unfolder(solid).unfold(max_faces_per_piece=args.max_faces_per_piece)
+    bed_units = None
+    if args.bed and args.max_faces_per_piece:
+        print("error: use either --bed or --max-faces-per-piece, not both",
+              file=sys.stderr)
+        return 2
+
+    unfolder = Unfolder(solid)
+    if args.bed:
+        bed_w, bed_h = parse_bed(args.bed)
+        usable_w = bed_w - 2 * args.bed_margin
+        usable_h = bed_h - 2 * args.bed_margin
+        bed_units = (usable_w / args.edge, usable_h / args.edge)
+        print(f"unfolding to fit a {bed_w:.1f} x {bed_h:.1f} mm bed "
+              f"({args.bed_margin:.1f} mm margin -> usable "
+              f"{usable_w:.1f} x {usable_h:.1f} mm) ...")
+        pieces = unfolder.unfold_for_bed(bed_units)
+    else:
+        print("unfolding into a flat net ...")
+        pieces = unfolder.unfold(max_faces_per_piece=args.max_faces_per_piece)
     bad = verify_no_overlap(pieces)
     n_hinge = sum(len(p.hinges) for p in pieces)
     n_seam = sum(len(p.boundary) for p in pieces) // 2
@@ -76,8 +114,18 @@ def main(argv=None):
           f"{n_hinge} fold hinges, {n_seam} glue seams, "
           f"{bad} overlapping face pairs")
     if bad:
-        print("  WARNING: overlaps detected; try --max-faces-per-piece to split",
+        print("  WARNING: overlaps detected; try --bed or --max-faces-per-piece",
               file=sys.stderr)
+
+    # per-piece sizes (and bed-fit confirmation)
+    for i, p in enumerate(pieces):
+        x0, y0, x1, y1 = p.bbox()
+        w, h = (x1 - x0) * args.edge, (y1 - y0) * args.edge
+        note = ""
+        if bed_units is not None:
+            ok = w <= bed_units[0] * args.edge + 1e-6 and h <= bed_units[1] * args.edge + 1e-6
+            note = "  FITS BED" if ok else "  !! TOO BIG"
+        print(f"    piece {i}: {len(p.faces):2d} faces, {w:6.1f} x {h:6.1f} mm{note}")
 
     if not args.no_magnets:
         print(f"  magnet pockets: {args.magnet_diameter:.3f} mm dia x "
@@ -85,7 +133,7 @@ def main(argv=None):
 
     svg_path = args.out + "_preview.svg"
     magnet_r = (args.magnet_diameter / 2.0 / args.edge) if not args.no_magnets else 0.0
-    write_svg(pieces, svg_path, magnet_radius=magnet_r)
+    write_svg(pieces, svg_path, magnet_radius=magnet_r, bed_units=bed_units)
     print(f"  wrote {svg_path}")
 
     params = FoldParams(
@@ -99,26 +147,43 @@ def main(argv=None):
         magnet_diameter_mm=args.magnet_diameter,
         magnet_depth_mm=args.magnet_depth,
     )
-    scad = generate_scad(pieces, params)
+
+    # combined .scad (overview / single-bed layout)
     scad_path = args.out + ".scad"
     with open(scad_path, "w") as f:
-        f.write(scad)
+        f.write(generate_scad(pieces, params))
     print(f"  wrote {scad_path}")
 
-    if args.stl:
+    # one standalone .scad per piece (each centered, ready to print on the bed)
+    piece_scads = []
+    if len(pieces) > 1:
+        for i, p in enumerate(pieces):
+            ppath = f"{args.out}_piece{i:02d}.scad"
+            with open(ppath, "w") as f:
+                f.write(generate_scad_single(p, params, name=f"piece{i:02d}"))
+            piece_scads.append(ppath)
+        print(f"  wrote {len(piece_scads)} per-piece .scad files "
+              f"({args.out}_piece00.scad ...)")
+
+    def render(scad_file):
         openscad = shutil.which("openscad")
         if not openscad:
             print("  openscad not found; skipping STL", file=sys.stderr)
-        else:
-            stl_path = args.out + ".stl"
-            print(f"  rendering {stl_path} (this can take a minute) ...")
-            r = subprocess.run([openscad, "-o", stl_path, scad_path],
-                               capture_output=True, text=True)
-            if r.returncode != 0:
-                print(r.stderr[-2000:], file=sys.stderr)
-                print("  STL render failed", file=sys.stderr)
-                return 1
-            print(f"  wrote {stl_path}")
+            return None
+        stl_file = scad_file[:-5] + ".stl"
+        print(f"  rendering {stl_file} ...")
+        r = subprocess.run([openscad, "-o", stl_file, scad_file],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            print(r.stderr[-2000:], file=sys.stderr)
+            print("  STL render failed", file=sys.stderr)
+            return None
+        return stl_file
+
+    if args.stl:
+        targets = piece_scads if len(pieces) > 1 else [scad_path]
+        for t in targets:
+            render(t)
 
     if args.solid:
         V = solid.vertices * args.edge
