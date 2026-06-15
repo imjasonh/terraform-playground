@@ -42,8 +42,8 @@ import numpy as np
 @dataclass
 class FoldParams:
     edge_mm: float = 30.0       # length of every polygon edge
-    thickness_mm: float = 3.0   # plate depth (T)
-    web_mm: float = 0.6         # living-hinge thickness left at the top
+    thickness_mm: float = 12.0  # plate depth (T): thick, rigid panels
+    web_mm: float = 0.4         # living-hinge thickness left at the top (~2 layers)
     slack_deg: float = 6.0      # extra opening added to every fold (more room)
     over_mm: float = 0.4        # run grooves slightly past each vertex
     eps_mm: float = 0.05        # cut a hair below the bed for clean booleans

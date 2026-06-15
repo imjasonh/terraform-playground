@@ -32,9 +32,9 @@ def main(argv=None):
     ap.add_argument("--edge", type=float, default=30.0,
                     help="edge length of every polygon, mm (default 30)")
     ap.add_argument("--depth", "--thickness", dest="depth", type=float,
-                    default=3.0, help="plate depth / thickness, mm (default 3)")
-    ap.add_argument("--web", type=float, default=0.6,
-                    help="living-hinge web thickness at the top, mm (default 0.6)")
+                    default=12.0, help="plate depth / thickness, mm (default 12)")
+    ap.add_argument("--web", type=float, default=0.4,
+                    help="living-hinge web thickness at the top, mm (default 0.4)")
     ap.add_argument("--slack", type=float, default=6.0,
                     help="extra fold opening added to every groove, deg (default 6)")
     ap.add_argument("--over", type=float, default=0.4,

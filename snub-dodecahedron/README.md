@@ -81,11 +81,11 @@ sudo apt-get install openscad                      # or https://openscad.org
 ## Usage
 
 ```bash
-# default: 30 mm edges, 3 mm thick, single net, writes out/snub_net.scad + preview
+# default: 30 mm edges, 12 mm thick, single net, writes out/snub_net.scad + preview
 uv run generate.py
 
 # pick your own size/depth and also render an STL
-uv run generate.py --edge 35 --depth 4 --web 0.6 --slack 6 --stl
+uv run generate.py --edge 35 --depth 14 --web 0.4 --slack 6 --stl
 
 # split into smaller pieces (≤ 20 faces each) for easier printing/handling
 uv run generate.py --max-faces-per-piece 20 --stl
@@ -102,8 +102,8 @@ slice and print.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--edge` | `30` | edge length of every polygon (mm) — sets overall size |
-| `--depth` / `--thickness` | `3` | plate depth / material thickness `T` (mm) |
-| `--web` | `0.6` | living-hinge web left at the top of each groove (mm) |
+| `--depth` / `--thickness` | `12` | plate depth / material thickness `T` (mm) — thick, rigid panels |
+| `--web` | `0.4` | living-hinge web left at the top of each groove (mm), ~1–2 print layers |
 | `--slack` | `6` | extra fold opening added to every groove (degrees) |
 | `--over` | `0.4` | run grooves this far past each vertex for a clean fold (mm) |
 | `--max-faces-per-piece` | — | split the net into pieces of at most N faces |
@@ -117,9 +117,12 @@ slice and print.
 1. **Orientation:** print the plate **inner (grooved) side down** on the bed.
    Every bevel wall is within ~`γ` of vertical (< ~20°), so the grooves are
    self-supporting — **no support material needed**.
-2. **Material:** PLA/PETG work. The `web` is a living hinge: with a single fold
-   it survives easily. For repeated folding or brittle filament, increase
-   `--web`, or reduce it toward ~0.4 mm for an easier fold.
+2. **Material:** PLA/PETG work. The default `--web 0.4` (≈1–2 layers at a
+   0.2 mm layer height) leaves a thin, easy-to-bend living hinge between the
+   thick rigid panels. Set your slicer's layer height so the web is a whole
+   number of layers (e.g. 0.4 mm web at 0.2 mm layers). For repeated folding or
+   brittle filament, increase `--web`; for an even easier single fold, drop it
+   toward one layer.
 3. **Fold** each hinge until the groove walls meet (or until the faces look
    right). The grooves are valley folds toward the inner side.
 4. **Glue** the 59 seams (and the hinge grooves, if you want a rigid result).
