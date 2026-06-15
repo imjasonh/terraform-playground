@@ -38,7 +38,7 @@ def verify_no_overlap(pieces):
     return bad
 
 
-def write_svg(pieces, path, scale=40.0, gap=1.5):
+def write_svg(pieces, path, scale=40.0, gap=1.5, magnet_radius=0.0):
     offsets = layout_pieces(pieces, gap=gap)
     # global bbox
     minx = miny = 1e9
@@ -73,6 +73,14 @@ def write_svg(pieces, path, scale=40.0, gap=1.5):
                 f'<polygon points="{pts}" fill="{fill}" stroke="#888" '
                 f'stroke-width="0.6"/>'
             )
+            if magnet_radius > 0:
+                cx = sum(x for x, _ in poly) / len(poly)
+                cy = sum(y for _, y in poly) / len(poly)
+                out.append(
+                    f'<circle cx="{X(cx + ox):.2f}" cy="{Y(cy + oy):.2f}" '
+                    f'r="{magnet_radius * scale:.2f}" fill="#444" '
+                    f'fill-opacity="0.55" stroke="none"/>'
+                )
         # hinges (fold lines) in green
         for h in p.hinges:
             x1, y1 = h.p

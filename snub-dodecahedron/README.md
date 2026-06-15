@@ -81,7 +81,7 @@ sudo apt-get install openscad                      # or https://openscad.org
 ## Usage
 
 ```bash
-# default: 30 mm edges, 12 mm thick, single net, writes out/snub_net.scad + preview
+# default: 30 mm edges, 12 mm thick, magnet pockets, single net -> out/snub_net.scad
 uv run generate.py
 
 # pick your own size/depth and also render an STL
@@ -106,6 +106,9 @@ slice and print.
 | `--web` | `0.4` | living-hinge web left at the top of each groove (mm), ~1–2 print layers |
 | `--slack` | `6` | extra fold opening added to every groove (degrees) |
 | `--over` | `0.4` | run grooves this far past each vertex for a clean fold (mm) |
+| `--magnet-diameter` | `3.175` | magnet pocket diameter (mm) — default 1/8 in |
+| `--magnet-depth` | `1.5875` | magnet pocket depth (mm) — default 1/16 in |
+| `--no-magnets` | off | do not pocket magnet holes in the faces |
 | `--max-faces-per-piece` | — | split the net into pieces of at most N faces |
 | `--no-boundary-bevel` | off | leave glue-seam edges square instead of chamfered |
 | `--solid` | off | also export the reference snub dodecahedron solid |
@@ -131,6 +134,23 @@ slice and print.
 Tip for choosing a size: the finished solid's circumradius is about
 `2.16 × edge`, so its overall diameter is about `4.31 × edge`. So 30 mm edges
 give a ball roughly 130 mm across.
+
+## Magnets
+
+Each face gets a cylindrical magnet pocket centered on its **exterior**
+surface (`z = T`, the continuous outer side — the *opposite* side from the
+inner fold grooves). The default pocket is **1/8 in diameter × 1/16 in deep**
+(`3.175 mm × 1.5875 mm`); change it with `--magnet-diameter` / `--magnet-depth`,
+or disable with `--no-magnets`.
+
+Because the exterior side faces **up** when you print grooved-side-down, the
+pockets are simple top-opening cavities — printable with no supports. Drop a
+disc magnet into each pocket (a dab of glue holds it). Mind magnet polarity if
+you want neighboring solids (or the folded faces) to attract rather than repel.
+
+If you want the magnet flush or slightly recessed, set `--magnet-depth` to your
+magnet's thickness; for a press-fit, shrink `--magnet-diameter` by ~0.1 mm, or
+leave it slightly oversized and glue (the "leave more room" bias).
 
 ## Files
 

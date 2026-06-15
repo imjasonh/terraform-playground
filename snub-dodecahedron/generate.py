@@ -39,6 +39,12 @@ def main(argv=None):
                     help="extra fold opening added to every groove, deg (default 6)")
     ap.add_argument("--over", type=float, default=0.4,
                     help="run grooves this far past each vertex, mm (default 0.4)")
+    ap.add_argument("--magnet-diameter", type=float, default=25.4 / 8.0,
+                    help="magnet pocket diameter, mm (default 3.175 = 1/8 in)")
+    ap.add_argument("--magnet-depth", type=float, default=25.4 / 16.0,
+                    help="magnet pocket depth, mm (default 1.5875 = 1/16 in)")
+    ap.add_argument("--no-magnets", action="store_true",
+                    help="do not pocket magnet holes in the faces")
     ap.add_argument("--max-faces-per-piece", type=int, default=None,
                     help="split the net into smaller pieces of at most N faces")
     ap.add_argument("--no-boundary-bevel", action="store_true",
@@ -73,8 +79,13 @@ def main(argv=None):
         print("  WARNING: overlaps detected; try --max-faces-per-piece to split",
               file=sys.stderr)
 
+    if not args.no_magnets:
+        print(f"  magnet pockets: {args.magnet_diameter:.3f} mm dia x "
+              f"{args.magnet_depth:.3f} mm deep, one per face (exterior)")
+
     svg_path = args.out + "_preview.svg"
-    write_svg(pieces, svg_path)
+    magnet_r = (args.magnet_diameter / 2.0 / args.edge) if not args.no_magnets else 0.0
+    write_svg(pieces, svg_path, magnet_radius=magnet_r)
     print(f"  wrote {svg_path}")
 
     params = FoldParams(
@@ -84,6 +95,9 @@ def main(argv=None):
         slack_deg=args.slack,
         over_mm=args.over,
         bevel_boundary=not args.no_boundary_bevel,
+        magnets=not args.no_magnets,
+        magnet_diameter_mm=args.magnet_diameter,
+        magnet_depth_mm=args.magnet_depth,
     )
     scad = generate_scad(pieces, params)
     scad_path = args.out + ".scad"
