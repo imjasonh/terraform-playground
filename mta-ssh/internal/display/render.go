@@ -17,7 +17,7 @@ const (
 	showCur = "\x1b[?25h"
 )
 
-func Render(feed mta.Feed, now time.Time, width int) string {
+func RenderOverview(feed mta.Feed, now time.Time, width int, refreshSec int) string {
 	if width < 60 {
 		width = 80
 	}
@@ -70,12 +70,109 @@ func Render(feed mta.Feed, now time.Time, width int) string {
 
 	b.WriteString("\n")
 	b.WriteString(dim)
-	b.WriteString(center("Refreshing every 30s  •  ssh mta-ssh for live updates", width))
+	footer := fmt.Sprintf("Refreshing every %ds  •  %s", refreshSec, mta.SelectableRoutesHint())
+	b.WriteString(center(footer, width))
 	b.WriteString(reset)
 	b.WriteString("\n")
 	b.WriteString(showCur)
 
 	return b.String()
+}
+
+func RenderLineDetail(routeID string, service mta.LineStatus, activities []mta.StationActivity, now time.Time, width int, refreshSec int, err error) string {
+	if width < 60 {
+		width = 80
+	}
+
+	style := mta.RouteStyleFor(routeID)
+	label := mta.RouteLabel(routeID)
+	bgR, bgG, bgB := mta.HexToRGB(style.Background)
+	fgR, fgG, fgB := mta.HexToRGB(style.Foreground)
+	badge := fmt.Sprintf("\x1b[48;2;%d;%d;%dm\x1b[38;2;%d;%d;%dm %s \x1b[0m", bgR, bgG, bgB, fgR, fgG, fgB, label)
+
+	var b strings.Builder
+	b.WriteString(clear)
+	b.WriteString(hideCur)
+
+	title := fmt.Sprintf("%s Train — Station Activity", label)
+	b.WriteString(bold)
+	b.WriteString(center(title, width))
+	b.WriteString(reset)
+	b.WriteString("\n")
+
+	statusLine := badge + " " + service.Status
+	b.WriteString(center(statusLine, width))
+	b.WriteString("\n")
+
+	subtitle := fmt.Sprintf("Updated %s", now.In(nyLocation()).Format("3:04:05 PM MST"))
+	b.WriteString(dim)
+	b.WriteString(center(subtitle, width))
+	b.WriteString(reset)
+	b.WriteString("\n\n")
+
+	b.WriteString(dim)
+	b.WriteString(strings.Repeat("─", width))
+	b.WriteString(reset)
+	b.WriteString("\n")
+
+	if msg := mta.ShuttleDetailMessage(routeID); msg != "" {
+		b.WriteString("\n  ")
+		b.WriteString(dim)
+		b.WriteString(msg)
+		b.WriteString(reset)
+		b.WriteString("\n")
+	} else if err != nil {
+		b.WriteString("\n  \x1b[31m")
+		b.WriteString(truncate(err.Error(), width-4))
+		b.WriteString(reset)
+		b.WriteString("\n")
+	} else if len(activities) == 0 {
+		b.WriteString("\n  ")
+		b.WriteString(dim)
+		b.WriteString("No trains at stations or arriving in the next 5 minutes.")
+		b.WriteString(reset)
+		b.WriteString("\n")
+	} else {
+		b.WriteString("\n")
+		for _, act := range activities {
+			icon, tone := stationIcon(act.State)
+			line := fmt.Sprintf("  %s  %s", icon, act.StationName)
+			b.WriteString(tone)
+			b.WriteString(truncate(line, width-8))
+			b.WriteString(reset)
+			b.WriteString(dim)
+			b.WriteString("  ")
+			b.WriteString(act.Detail)
+			b.WriteString(reset)
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("\n")
+	b.WriteString(dim)
+	footer := fmt.Sprintf("Refreshing every %ds  •  Esc back to all lines", refreshSec)
+	b.WriteString(center(footer, width))
+	b.WriteString(reset)
+	b.WriteString("\n")
+	b.WriteString(showCur)
+
+	return b.String()
+}
+
+func stationIcon(state string) (string, string) {
+	switch state {
+	case mta.StationTrainHere:
+		return "●", "\x1b[38;2;80;220;120m\x1b[1m"
+	case mta.StationArrivingSoon:
+		return "↓", "\x1b[38;2;255;200;80m"
+	default:
+		return "·", dim
+	}
+}
+
+// Render keeps the render-once overview API.
+func Render(feed mta.Feed, now time.Time, width int) string {
+	return RenderOverview(feed, now, width, 10)
 }
 
 func renderLineCell(line mta.LineStatus, width int) string {

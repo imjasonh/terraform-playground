@@ -7,41 +7,43 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
-	"sync"
 	"time"
 
-	"github.com/imjasonh/terraform-playground/mta-ssh/internal/display"
 	"github.com/imjasonh/terraform-playground/mta-ssh/internal/mta"
 	"golang.org/x/crypto/ssh"
 )
 
 type Server struct {
-	Addr   string
-	Client *mta.Client
+	Addr         string
+	AlertsClient *mta.Client
+	TripClient   *mta.TripClient
+	RefreshEvery time.Duration
 
 	hostKey ssh.Signer
 }
 
-func New(addr string, client *mta.Client) (*Server, error) {
+func New(addr string, alertsClient *mta.Client, tripClient *mta.TripClient, refreshEvery time.Duration) (*Server, error) {
+	if refreshEvery <= 0 {
+		refreshEvery = 10 * time.Second
+	}
 	key, err := loadOrGenerateHostKey()
 	if err != nil {
 		return nil, err
 	}
 	return &Server{
-		Addr:    addr,
-		Client:  client,
-		hostKey: key,
+		Addr:         addr,
+		AlertsClient: alertsClient,
+		TripClient:   tripClient,
+		RefreshEvery: refreshEvery,
+		hostKey:      key,
 	}, nil
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	config := &ssh.ServerConfig{
-		NoClientAuth: true,
-	}
+	config := &ssh.ServerConfig{NoClientAuth: true}
 	config.AddHostKey(s.hostKey)
 
 	listener, err := net.Listen("tcp", s.Addr)
@@ -50,7 +52,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	defer listener.Close()
 
-	log.Printf("mta-ssh listening on %s", s.Addr)
+	log.Printf("mta-ssh listening on %s (refresh every %s)", s.Addr, s.RefreshEvery)
 
 	go func() {
 		<-ctx.Done()
@@ -100,7 +102,6 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 
 	var (
 		ptyReq bool
-		term   = "xterm-256color"
 		width  = 100
 		height = 40
 	)
@@ -112,7 +113,6 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 			if len(req.Payload) >= 8 {
 				termLen := int(req.Payload[4])<<24 | int(req.Payload[5])<<16 | int(req.Payload[6])<<8 | int(req.Payload[7])
 				if len(req.Payload) >= 8+termLen+8 {
-					term = string(req.Payload[8 : 8+termLen])
 					off := 8 + termLen
 					width = int(req.Payload[off])<<24 | int(req.Payload[off+1])<<16 | int(req.Payload[off+2])<<8 | int(req.Payload[off+3])
 					height = int(req.Payload[off+4])<<24 | int(req.Payload[off+5])<<16 | int(req.Payload[off+6])<<8 | int(req.Payload[off+7])
@@ -131,7 +131,7 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 				continue
 			}
 			_ = req.Reply(true, nil)
-			s.runLiveDisplay(channel, term, width, height)
+			s.runLiveDisplay(channel, width, height)
 			return
 		default:
 			_ = req.Reply(false, nil)
@@ -139,34 +139,20 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 	}
 }
 
-func (s *Server) runLiveDisplay(out io.Writer, term string, width, height int) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	var writeMu sync.Mutex
-	render := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		feed, err := s.Client.Fetch(ctx)
-		if err != nil {
-			msg := fmt.Sprintf("\x1b[2J\x1b[H\x1b[31mError fetching MTA feed: %v\x1b[0m\r\n", err)
-			writeMu.Lock()
-			_, _ = io.WriteString(out, msg)
-			writeMu.Unlock()
-			return
-		}
-
-		screen := display.Render(feed, time.Now(), width)
-		writeMu.Lock()
-		_, _ = io.WriteString(out, screen)
-		writeMu.Unlock()
+func (s *Server) runLiveDisplay(channel ssh.Channel, width, height int) {
+	_ = height
+	session := &Session{
+		AlertsClient: s.AlertsClient,
+		TripClient:   s.TripClient,
+		RefreshEvery: s.RefreshEvery,
+		out:          channel,
+		in:           channel,
+		width:        width,
+		height:       height,
+		renderNow:    make(chan struct{}, 1),
+		widthCh:      make(chan int, 1),
 	}
-
-	render()
-	for range ticker.C {
-		render()
-	}
+	session.Run()
 }
 
 func loadOrGenerateHostKey() (ssh.Signer, error) {
