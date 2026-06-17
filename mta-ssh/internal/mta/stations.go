@@ -31,30 +31,30 @@ var (
 
 func Stations() (*StationIndex, error) {
 	stationOnce.Do(func() {
-		stationIndex, stationErr = loadStationIndex()
+		path := os.Getenv("MTA_GTFS_STOPS")
+		if path == "" {
+			candidates := []string{
+				"testdata/gtfs/stops.txt",
+				filepath.Join("mta-ssh", "testdata/gtfs/stops.txt"),
+				"/workspace/mta-ssh/testdata/gtfs/stops.txt",
+			}
+			for _, c := range candidates {
+				if _, err := os.Stat(c); err == nil {
+					path = c
+					break
+				}
+			}
+		}
+		if path == "" {
+			stationErr = fmt.Errorf("stops.txt not found; set MTA_GTFS_STOPS")
+			return
+		}
+		stationIndex, stationErr = loadStationIndexFrom(path)
 	})
 	return stationIndex, stationErr
 }
 
-func loadStationIndex() (*StationIndex, error) {
-	path := os.Getenv("MTA_GTFS_STOPS")
-	if path == "" {
-		candidates := []string{
-			"testdata/gtfs/stops.txt",
-			filepath.Join("mta-ssh", "testdata/gtfs/stops.txt"),
-			"/workspace/mta-ssh/testdata/gtfs/stops.txt",
-		}
-		for _, c := range candidates {
-			if _, err := os.Stat(c); err == nil {
-				path = c
-				break
-			}
-		}
-	}
-	if path == "" {
-		return nil, fmt.Errorf("stops.txt not found; set MTA_GTFS_STOPS")
-	}
-
+func loadStationIndexFrom(path string) (*StationIndex, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

@@ -10,15 +10,15 @@ func RouteFromKey(key byte) (string, bool) {
 	switch {
 	case key >= '1' && key <= '7':
 		return string(key), true
-	case key >= 'a' && key <= 'z':
+	case key == 'i' || key == 'I':
+		return "SI", true
+	case key >= 'a' && key <= 'z', key >= 'A' && key <= 'Z':
 		r := strings.ToUpper(string(key))
 		for _, route := range SubwayRoutes {
 			if route == r {
 				return route, true
 			}
 		}
-	case key == 'i' || key == 'I':
-		return "SI", true
 	}
 	return "", false
 }
