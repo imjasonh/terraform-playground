@@ -1,0 +1,123 @@
+{
+  "header": {
+    "gtfsRealtimeVersion": "2.0",
+    "timestamp": "1734451200"
+  },
+  "entity": [
+    {
+      "id": "1",
+      "alert": {
+        "activePeriod": [{ "start": "1609459200" }],
+        "informedEntity": [
+          {
+            "agencyId": "MTASBWY",
+            "routeId": "4",
+            ".nyctMercuryEntitySelector": { "sortOrder": "MTASBWY:4:26" }
+          }
+        ],
+        "headerText": {
+          "translation": [{ "text": "Delays on the 4 train due to signal problems at Grand Central" }]
+        },
+        ".nyctMercuryAlert": {
+          "alertType": "Delays",
+          "displayBeforeActive": 0
+        }
+      }
+    },
+    {
+      "id": "2",
+      "alert": {
+        "activePeriod": [{ "start": "1609459200" }],
+        "informedEntity": [
+          {
+            "agencyId": "MTASBWY",
+            "routeId": "N",
+            ".nyctMercuryEntitySelector": { "sortOrder": "MTASBWY:N:34" }
+          },
+          {
+            "agencyId": "MTASBWY",
+            "routeId": "Q",
+            ".nyctMercuryEntitySelector": { "sortOrder": "MTASBWY:Q:34" }
+          },
+          {
+            "agencyId": "MTASBWY",
+            "routeId": "R",
+            ".nyctMercuryEntitySelector": { "sortOrder": "MTASBWY:R:34" }
+          }
+        ],
+        "headerText": {
+          "translation": [{ "text": "Part Suspended between Canal St and DeKalb Av" }]
+        },
+        ".nyctMercuryAlert": {
+          "alertType": "Part Suspended",
+          "displayBeforeActive": 0
+        }
+      }
+    },
+    {
+      "id": "3",
+      "alert": {
+        "activePeriod": [{ "start": "1609459200" }],
+        "informedEntity": [
+          {
+            "agencyId": "MTASBWY",
+            "routeId": "L",
+            ".nyctMercuryEntitySelector": { "sortOrder": "MTASBWY:L:23" }
+          }
+        ],
+        "headerText": {
+          "translation": [{ "text": "Planned Work - Weekend service changes" }]
+        },
+        ".nyctMercuryAlert": {
+          "alertType": "Planned - Stops Skipped",
+          "displayBeforeActive": 0
+        }
+      }
+    },
+    {
+      "id": "4",
+      "alert": {
+        "activePeriod": [{ "start": "1609459200" }],
+        "informedEntity": [
+          {
+            "agencyId": "MTASBWY",
+            "routeId": "A",
+            ".nyctMercuryEntitySelector": { "sortOrder": "MTASBWY:A:16" }
+          },
+          {
+            "agencyId": "MTASBWY",
+            "routeId": "C",
+            ".nyctMercuryEntitySelector": { "sortOrder": "MTASBWY:C:16" }
+          }
+        ],
+        "headerText": {
+          "translation": [{ "text": "Slow speeds between 59 St and 125 St" }]
+        },
+        ".nyctMercuryAlert": {
+          "alertType": "Slow Speeds",
+          "displayBeforeActive": 0
+        }
+      }
+    },
+    {
+      "id": "5",
+      "alert": {
+        "activePeriod": [{ "start": "1609459200" }],
+        "informedEntity": [
+          {
+            "agencyId": "MTASBWY",
+            "routeId": "7",
+            ".nyctMercuryEntitySelector": { "sortOrder": "MTASBWY:7:12" }
+          }
+        ],
+        "headerText": {
+          "translation": [{ "text": "Expect delays due to earlier incident" }]
+        },
+        ".nyctMercuryAlert": {
+          "alertType": "Expect Delays",
+          "displayBeforeActive": 0
+        }
+      }
+    }
+  ]
+}
