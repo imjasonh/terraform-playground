@@ -1,3 +1,4 @@
 /target/
+.deps/
 **/*.rs.bk
 Cargo.lock

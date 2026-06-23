@@ -36,10 +36,21 @@ This implements the lazy-pull approach described in [dagdotdev registry explorer
 
 ## Prerequisites
 
-- Rust 1.96+ (see `/usr/local/cargo/env` in the devcontainer)
-- For full VM boot: Firecracker with **generic vhost-user** support ([PR #5773](https://github.com/firecracker-microvm/firecracker/pull/5773)), a Linux guest kernel with `virtio_fs`, and `/dev/kvm`
+| Requirement | Notes |
+|-------------|-------|
+| Rust 1.96+ | `source /usr/local/cargo/env` in the devcontainer |
+| `/dev/kvm` read/write | `[ -w /dev/kvm ] && echo OK` — add yourself to the `kvm` group if needed |
+| Docker config (optional) | `~/.docker/config.json` for private registries |
+| Host tools for VM path | `git`, `curl`, `docker`, `sudo` (kernel + Firecracker builds use Firecracker's `devtool`) |
 
-## Build
+**Important:** virtio-fs needs two things that official Firecracker release artifacts do not provide out of the box:
+
+1. A **guest `vmlinux` with `CONFIG_VIRTIO_FS=y`** — the CI kernels from S3 do not enable virtio-fs.
+2. A **Firecracker binary with generic vhost-user** ([PR #5773](https://github.com/firecracker-microvm/firecracker/pull/5773)) — release builds only expose vhost-user **block**, not virtio-fs.
+
+The scripts under `scripts/` automate both builds into `.deps/`.
+
+## Build this project
 
 ```bash
 source /usr/local/cargo/env
@@ -47,7 +58,93 @@ cd firecracker-container-vm
 cargo build --release
 ```
 
-## Run the vhost-fs daemon
+## Quickstart (full path)
+
+### 1. Host dependencies (Firecracker + vmlinux)
+
+One-shot (builds from source; needs Docker and sudo):
+
+```bash
+cd firecracker-container-vm
+./scripts/setup-host.sh
+```
+
+Or step by step:
+
+```bash
+export DEPS_DIR="$PWD/.deps"
+
+# Firecracker with PUT /vhost-user-devices/{id} (PR #5773 branch)
+./scripts/build-firecracker-virtiofs.sh
+
+# Guest kernel with virtio-fs enabled (patches Firecracker's 6.1 CI config)
+./scripts/build-vmlinux-virtiofs.sh
+```
+
+To download a **stock** Firecracker release only (no virtio-fs frontend):
+
+```bash
+./scripts/download-firecracker.sh   # installs .deps/firecracker
+```
+
+### 2. Verify KVM
+
+```bash
+[ -r /dev/kvm ] && [ -w /dev/kvm ] && echo "KVM OK" || echo "Fix KVM access first"
+```
+
+### 3. Run the lazy rootfs daemon
+
+```bash
+./target/release/fc-vhostfsd \
+  --image docker.io/library/alpine:3.20 \
+  --socket /tmp/fc-vhostfs.sock \
+  --cache-dir /tmp/fc-oci-cache \
+  --tag rootfs \
+  --metrics-addr 127.0.0.1:9100
+```
+
+In another terminal, confirm metrics and that the socket exists:
+
+```bash
+curl -s localhost:9100/metrics | rg '^fc_startup_ready_milliseconds'
+ls -l /tmp/fc-vhostfs.sock
+```
+
+### 4. Boot Firecracker with the container image as rootfs
+
+```bash
+./target/release/fc-runner \
+  --image docker.io/library/alpine:3.20 \
+  --firecracker "$PWD/.deps/firecracker-virtiofs" \
+  --kernel "$PWD/.deps/vmlinux-virtiofs" \
+  --cache-dir /tmp/fc-oci-cache \
+  --vhost-socket /tmp/fc-vhostfs.sock \
+  --tag rootfs \
+  --memory-mib 512
+```
+
+Use `--dry-run` to print the Firecracker API payload without starting the VM (still starts `fc-vhostfsd`).
+
+Guest cmdline (set by `fc-runner`):
+
+```
+console=ttyS0 reboot=k panic=1 pci=off init=/bin/sh rootfstype=virtiofs root=/ root=rootfs
+```
+
+Alpine provides `/bin/sh` on the merged root. You should get a shell on the serial console when the VM starts.
+
+### 5. Smoke test without a VM (daemon only)
+
+If you only want to validate lazy pulls + vhost-user handshake:
+
+```bash
+cargo test
+# vhost-user protocol test against a local fixture layer (no KVM/registry)
+cargo test -p fc-runner --test vhost_e2e
+```
+
+## Run the vhost-fs daemon (reference)
 
 ```bash
 ./target/release/fc-vhostfsd \
@@ -107,34 +204,81 @@ curl -s localhost:9100/metrics | rg '^fc_'
 
 ## Guest kernel (`vmlinux`)
 
-You need a **Linux guest kernel with virtio-fs**, not a container host kernel. Minimum config:
+You need a **Linux guest kernel with virtio-fs over virtio-mmio** (Firecracker's bus).
 
-- `CONFIG_VIRTIO_MMIO=y` (Firecracker uses MMIO virtio, not PCI)
-- `CONFIG_VIRTIO_FS=y` and `CONFIG_VIRTIO_FS_VIRTIO_MEM=y` (if available)
-- `CONFIG_EXT4` / `CONFIG_BLK_DEV` not required when root is virtiofs
-- `CONFIG_SERIAL_8250_CONSOLE=y`, `CONFIG_VT=y` for `console=ttyS0`
-- `CONFIG_DEVTMPFS=y`, `CONFIG_TMPFS=y`
+### Do not use the stock CI vmlinux for this example
 
-**Easiest path for Firecracker:** use the upstream CI-built kernel artifacts attached to [Firecracker releases](https://github.com/firecracker-microvm/firecracker/releases) (the `vmlinux` asset), or build from [`resources/guest_configs`](https://github.com/firecracker-microvm/firecracker/tree/main/resources/guest_configs) with `virtio_fs` enabled.
+Firecracker's [getting-started guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md) downloads kernels from S3:
 
-Example cmdline (what `fc-runner` generates):
-
+```bash
+ARCH="$(uname -m)"
+release_url="https://github.com/firecracker-microvm/firecracker/releases"
+latest_version=$(basename "$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${release_url}/latest")")
+CI_VERSION=${latest_version%.*}
+latest_kernel_key=$(curl "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2" \
+  | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" \
+  | sort -V | tail -1)
+wget -O vmlinux-ci "https://s3.amazonaws.com/spec.ccfc.min/${latest_kernel_key}"
 ```
-console=ttyS0 reboot=k panic=1 pci=off init=/bin/sh rootfstype=virtiofs root=/ root=rootfs
+
+That kernel is fine for block-device rootfs smoke tests, but its config has `# CONFIG_VIRTIO_FS is not set`. Use `./scripts/build-vmlinux-virtiofs.sh` instead.
+
+### Recommended: build virtio-fs-enabled vmlinux
+
+```bash
+./scripts/build-vmlinux-virtiofs.sh
+# output: .deps/vmlinux-virtiofs
 ```
 
-The image must contain `/bin/sh` (or change `init=`). Alpine works well for smoke tests. The `root=rootfs` tag must match `--tag` on `fc-vhostfsd`.
+This clones Firecracker, enables `CONFIG_VIRTIO_FS=y` in the `6.1` CI guest config, and runs `./tools/devtool build_ci_artifacts kernels 6.1`.
 
-**Cloud Hypervisor / QEMU** often use the same `vmlinux`; only the virtio transport differs (PCI vs MMIO) — match the kernel to your VMM's virtio bus.
+Minimum kernel options (already present in Firecracker CI configs except virtio-fs):
 
-## Run the Firecracker example
+- `CONFIG_VIRTIO_MMIO=y`
+- `CONFIG_VIRTIO_FS=y`
+- `CONFIG_FUSE_FS=y`
+- `CONFIG_SERIAL_8250_CONSOLE=y` for `console=ttyS0`
+
+Manual build details: [Firecracker rootfs and kernel setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/rootfs-and-kernel-setup.md).
+
+## Firecracker binary
+
+### For virtio-fs (`fc-runner`)
+
+Released binaries from [GitHub releases](https://github.com/firecracker-microvm/firecracker/releases) do **not** include `PUT /vhost-user-devices/{id}` yet. Build from PR #5773:
+
+```bash
+./scripts/build-firecracker-virtiofs.sh
+# output: .deps/firecracker-virtiofs
+```
+
+### Download latest official release (block/net only)
+
+```bash
+./scripts/download-firecracker.sh
+# output: .deps/firecracker
+curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/latest/download/firecracker-$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/firecracker-microvm/firecracker/releases/latest | xargs basename)-$(uname -m).tgz | tar -xz
+```
+
+Or manually (from upstream docs):
+
+```bash
+ARCH="$(uname -m)"
+release_url="https://github.com/firecracker-microvm/firecracker/releases"
+latest=$(basename "$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${release_url}/latest")")
+curl -fsSL "${release_url}/download/${latest}/firecracker-${latest}-${ARCH}.tgz" | tar -xz
+mv "release-${latest}-${ARCH}/firecracker-${latest}-${ARCH}" firecracker
+```
+
+## Run the Firecracker example (reference)
 
 ```bash
 ./target/release/fc-runner \
   --image docker.io/library/alpine:3.20 \
-  --kernel /path/to/vmlinux \
-  --firecracker /path/to/firecracker \
-  --dry-run   # prints API config, keeps vhostfsd running
+  --firecracker "$PWD/.deps/firecracker-virtiofs" \
+  --kernel "$PWD/.deps/vmlinux-virtiofs" \
+  --cache-dir /tmp/fc-oci-cache \
+  --dry-run
 ```
 
 Without `--dry-run`, `fc-runner` configures Firecracker via its HTTP API:
@@ -171,9 +315,8 @@ This is an **example** implementation, not production hardened:
 
 - **Read-only** rootfs; no whiteout/opaque-dir completeness guarantees beyond basic `.wh.*` handling
 - **Single-platform** manifests only (no OCI index platform selection)
-- Registry auth is minimal (anonymous/public images); extend `RegistryClient` for private registries
 - Layer blobs are cached to disk on first full fetch; subsequent reads use the on-disk gzip index
-- Firecracker virtio-fs requires a recent build with generic vhost-user; use Cloud Hypervisor as an alternative frontend
+- `fc-runner` is Firecracker-specific; other VMMs run `fc-vhostfsd` directly (see table above)
 
 ## References
 
