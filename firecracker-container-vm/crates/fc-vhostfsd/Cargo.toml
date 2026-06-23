@@ -1,0 +1,31 @@
+[package]
+name = "fc-vhostfsd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "vhost-user virtio-fs daemon serving OCI container image layers on demand"
+
+[lib]
+name = "fc_vhostfsd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fc-vhostfsd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+fc-oci-fs = { path = "../fc-oci-fs" }
+fuse-backend-rs = { workspace = true, default-features = false, features = ["virtiofs"] }
+log.workspace = true
+tokio.workspace = true
+vhost.workspace = true
+vhost-user-backend.workspace = true
+virtio-bindings.workspace = true
+virtio-queue.workspace = true
+vm-memory.workspace = true
+vmm-sys-util.workspace = true
+nix = { version = "0.30", features = ["fs"] }

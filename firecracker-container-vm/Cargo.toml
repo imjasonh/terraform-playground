@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fc-oci-fs",
+    "crates/fc-vhostfsd",
+    "crates/fc-runner",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Example Contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+flate2 = "1"
+fuse-backend-rs = { version = "0.14", default-features = false, features = ["virtiofs"] }
+futures = "0.3"
+hex = "0.4"
+http = "1"
+indexed_deflate = "0.1"
+log = "0.4"
+oci-distribution = { version = "0.10", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "json", "stream", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+vhost = "0.16"
+vhost-user-backend = "0.22"
+virtio-bindings = "0.2"
+virtio-queue = "0.17"
+vm-memory = "0.17"
+vmm-sys-util = "0.15"
+libc = "0.2"
+criterion = { version = "0.5", features = ["html_reports"] }
