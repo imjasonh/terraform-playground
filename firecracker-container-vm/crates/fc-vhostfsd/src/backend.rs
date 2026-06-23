@@ -79,6 +79,7 @@ impl FsBackend {
                     None,
                 )
                 .map_err(|e| std::io::Error::other(e))?;
+            fc_oci_fs::metrics::record_fuse_request();
 
             if self.event_idx {
                 if vring_state.add_used(head_index, 0).is_err() {

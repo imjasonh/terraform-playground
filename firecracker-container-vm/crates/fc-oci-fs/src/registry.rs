@@ -4,13 +4,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use oci_distribution::client::Client;
-use oci_distribution::secrets::RegistryAuth;
 use oci_distribution::Reference;
 use reqwest::blocking::Client as HttpClient;
 use reqwest::header::{AUTHORIZATION, RANGE};
 use reqwest::StatusCode;
 
+use crate::docker_auth::ResolvedAuth;
 use crate::error::{Error, Result};
+use crate::metrics;
 
 const GZIP_LAYER_TYPES: &[&str] = &[
     "application/vnd.oci.image.layer.v1.tar+gzip",
@@ -31,7 +32,6 @@ pub struct RangeBlob {
     endpoint: BlobEndpoint,
     http: HttpClient,
     pos: u64,
-    /// Small read-ahead cache to avoid a range request per byte.
     cache: Vec<u8>,
     cache_start: u64,
 }
@@ -42,13 +42,16 @@ impl RangeBlob {
     }
 
     fn fetch_range(&mut self, start: u64, end: u64) -> Result<Vec<u8>> {
+        metrics::record_range_request();
         let range = format!("bytes={}-{}", start, end.saturating_sub(1));
         let mut req = self.http.get(&self.endpoint.url).header(RANGE, range);
         if let Some(auth) = &self.endpoint.auth_header {
             req = req.header(AUTHORIZATION, auth);
         }
         let resp = req.send()?.error_for_status()?;
-        Ok(resp.bytes()?.to_vec())
+        let bytes = resp.bytes()?.to_vec();
+        metrics::record_bytes_fetched(bytes.len() as u64);
+        Ok(bytes)
     }
 
     fn refill_cache(&mut self, pos: u64) -> Result<()> {
@@ -62,16 +65,13 @@ impl RangeBlob {
         let data = if self.endpoint.supports_range {
             self.fetch_range(pos, end)?
         } else {
-            let mut full = self.http.get(&self.endpoint.url).send()?.error_for_status()?;
+            let mut req = self.http.get(&self.endpoint.url);
             if let Some(auth) = &self.endpoint.auth_header {
-                full = self
-                    .http
-                    .get(&self.endpoint.url)
-                    .header(AUTHORIZATION, auth.clone())
-                    .send()?
-                    .error_for_status()?;
+                req = req.header(AUTHORIZATION, auth);
             }
+            let full = req.send()?.error_for_status()?;
             let bytes = full.bytes()?.to_vec();
+            metrics::record_bytes_fetched(bytes.len() as u64);
             bytes[pos as usize..end as usize].to_vec()
         };
         self.cache = data;
@@ -123,23 +123,26 @@ impl Seek for RangeBlob {
     }
 }
 
-/// Registry client with ping/token caching and range-aware blob access.
+/// Registry client with docker config auth, ping/token caching, and range-aware blob access.
 #[derive(Clone)]
 pub struct RegistryClient {
     oci: Arc<Mutex<Client>>,
     http: HttpClient,
+    auth: Arc<Mutex<HashMap<String, ResolvedAuth>>>,
     blob_cache: Arc<Mutex<HashMap<String, BlobEndpoint>>>,
     cache_dir: PathBuf,
 }
 
 impl RegistryClient {
     pub fn new(cache_dir: impl AsRef<Path>) -> Self {
+        metrics::process_started();
         Self {
             oci: Arc::new(Mutex::new(Client::new(oci_distribution::client::ClientConfig {
                 protocol: oci_distribution::client::ClientProtocol::Https,
                 ..Default::default()
             }))),
             http: HttpClient::new(),
+            auth: Arc::new(Mutex::new(HashMap::new())),
             blob_cache: Arc::new(Mutex::new(HashMap::new())),
             cache_dir: cache_dir.as_ref().to_path_buf(),
         }
@@ -149,15 +152,26 @@ impl RegistryClient {
         &self.cache_dir
     }
 
+    fn auth_for(&self, reference: &Reference) -> Result<ResolvedAuth> {
+        let key = reference.resolve_registry().to_string();
+        if let Some(auth) = self.auth.lock().unwrap().get(&key).cloned() {
+            return Ok(auth);
+        }
+        let auth = ResolvedAuth::for_reference(reference)?;
+        self.auth.lock().unwrap().insert(key, auth.clone());
+        Ok(auth)
+    }
+
     pub async fn resolve_layers(&mut self, image: &str) -> Result<(Reference, Vec<String>)> {
         let reference: Reference = image
             .parse::<Reference>()
             .map_err(|e| Error::InvalidReference(format!("{e}")))?;
+        let auth = self.auth_for(&reference)?;
         let (manifest, _) = self
             .oci
             .lock()
             .unwrap()
-            .pull_manifest(&reference, &RegistryAuth::Anonymous)
+            .pull_manifest(&reference, &auth.to_oci_auth())
             .await?;
         let image_manifest = match manifest {
             oci_distribution::manifest::OciManifest::Image(m) => m,
@@ -186,12 +200,13 @@ impl RegistryClient {
 
     pub async fn open_blob(&mut self, reference: &Reference, digest: &str) -> Result<RangeBlob> {
         let key = format!("{}@{}", reference.repository(), digest);
+        let auth = self.auth_for(reference)?;
         let endpoint = {
             let cached = self.blob_cache.lock().unwrap().get(&key).cloned();
             if let Some(ep) = cached {
                 ep
             } else {
-                let ep = self.probe_blob(reference, digest).await?;
+                let ep = self.probe_blob(reference, digest, &auth).await?;
                 self.blob_cache.lock().unwrap().insert(key, ep.clone());
                 ep
             }
@@ -205,7 +220,21 @@ impl RegistryClient {
         })
     }
 
-    async fn probe_blob(&mut self, reference: &Reference, digest: &str) -> Result<BlobEndpoint> {
+    pub async fn layer_compressed_size(
+        &mut self,
+        reference: &Reference,
+        digest: &str,
+    ) -> Result<u64> {
+        let blob = self.open_blob(reference, digest).await?;
+        Ok(blob.len())
+    }
+
+    async fn probe_blob(
+        &mut self,
+        reference: &Reference,
+        digest: &str,
+        auth: &ResolvedAuth,
+    ) -> Result<BlobEndpoint> {
         let digest = format!("sha256:{digest}");
         let url = format!(
             "https://{}/v2/{}/blobs/{}",
@@ -214,28 +243,23 @@ impl RegistryClient {
             digest
         );
 
-        // Ensure we have registry auth via a manifest pull on this repository.
         let _ = self
             .oci
             .lock()
             .unwrap()
-            .pull_manifest(reference, &RegistryAuth::Anonymous)
+            .pull_manifest(reference, &auth.to_oci_auth())
             .await?;
 
-        let auth_header: Option<String> = None;
+        let auth_header = auth.authorization_header();
 
         let mut req = self.http.head(&url);
-        if let Some(ref auth) = auth_header {
-            req = req.header(AUTHORIZATION, auth);
+        if let Some(ref header) = auth_header {
+            req = req.header(AUTHORIZATION, header);
         }
         let head = req.send()?;
         let head = head.error_for_status()?;
 
-        let final_url = head
-            .url()
-            .as_str()
-            .trim_end_matches('/')
-            .to_string();
+        let final_url = head.url().as_str().trim_end_matches('/').to_string();
         let size = head
             .headers()
             .get(reqwest::header::CONTENT_LENGTH)
@@ -249,19 +273,22 @@ impl RegistryClient {
             .map(|v| v.contains("bytes"))
             .unwrap_or(false);
 
-        // Some registries only advertise range support on GET; probe with a 1-byte range.
         let supports_range = if supports_range {
             true
         } else {
-            let mut probe = self
-                .http
-                .get(&final_url)
-                .header(RANGE, "bytes=0-0");
-            if let Some(ref auth) = auth_header {
-                probe = probe.header(AUTHORIZATION, auth);
+            let mut probe = self.http.get(&final_url).header(RANGE, "bytes=0-0");
+            if let Some(ref header) = auth_header {
+                probe = probe.header(AUTHORIZATION, header);
             }
             let resp = probe.send()?;
-            resp.status() == StatusCode::PARTIAL_CONTENT
+            let ok = resp.status() == StatusCode::PARTIAL_CONTENT;
+            if ok {
+                metrics::record_range_request();
+                if let Ok(body) = resp.bytes() {
+                    metrics::record_bytes_fetched(body.len() as u64);
+                }
+            }
+            ok
         };
 
         Ok(BlobEndpoint {

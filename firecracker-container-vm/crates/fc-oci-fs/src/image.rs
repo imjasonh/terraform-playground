@@ -5,6 +5,7 @@ use oci_distribution::Reference;
 
 use crate::error::Result;
 use crate::gz::{IndexedLayer, LayerSource};
+use crate::metrics;
 use crate::overlay::OverlayFs;
 use crate::registry::{LocalBlob, RegistryClient};
 
@@ -27,7 +28,18 @@ impl ImageFs {
         cache_dir: impl AsRef<Path>,
         registry: &mut RegistryClient,
     ) -> Result<Self> {
+        metrics::mark_startup_begin();
         let (reference, layer_digests) = registry.resolve_layers(image).await?;
+        let mut total_layer_bytes = 0u64;
+        for digest in &layer_digests {
+            total_layer_bytes = total_layer_bytes.saturating_add(
+                registry
+                    .layer_compressed_size(&reference, digest)
+                    .await?,
+            );
+        }
+        metrics::record_layer_sizes(total_layer_bytes);
+
         let mut layers = Vec::new();
         for digest in &layer_digests {
             let blob = registry

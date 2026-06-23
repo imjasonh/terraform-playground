@@ -59,6 +59,74 @@ cargo build --release
 
 On first access to a layer, the daemon downloads the blob (if not cached), builds a gzip index + tar TOC, then serves files via range reads.
 
+### Registry authentication
+
+`fc-vhostfsd` / `fc-oci-fs` read credentials the same way the Docker CLI does:
+
+- `~/.docker/config.json` (or `$DOCKER_CONFIG/config.json`)
+- `auths` entries (inline base64 user/pass)
+- per-registry `credHelpers`
+- global `credsStore` (e.g. `docker-credential-gcr`, `osxkeychain`, `pass`)
+
+Run `docker login` (or your cloud provider's helper) once; private images should work without extra flags.
+
+## Metrics
+
+`fc-vhostfsd` exposes Prometheus text on `http://127.0.0.1:9100/metrics` by default (`--metrics-addr`).
+
+| Metric | Meaning |
+|--------|---------|
+| `fc_bytes_fetched_from_registry` | Compressed bytes actually pulled from the registry |
+| `fc_bytes_saved_vs_full_pull` | `sum(layer sizes) - fetched` (data you did **not** download vs a full `docker pull`) |
+| `fc_layer_compressed_bytes_total` | Total compressed layer bytes in the resolved image |
+| `fc_registry_range_requests_total` | HTTP range requests to blob URLs |
+| `fc_full_blob_downloads_total` | Layers fully copied to local cache (first-time index build) |
+| `fc_gzip_index_builds_total` | Gzip index builds |
+| `fc_fuse_requests_total` / `fc_fuse_reads_total` | virtio-fs / FUSE traffic |
+| `fc_startup_ready_milliseconds` | Image open → vhost socket listening |
+| `fc_process_rss_bytes` | Daemon resident memory |
+| `fc_cache_dir_bytes_on_disk` | Local cache size (blobs + indexes) |
+
+```bash
+curl -s localhost:9100/metrics | rg '^fc_'
+```
+
+## Which VMM can use this? (virtio-fs frontends)
+
+`fc-vhostfsd` is a **vhost-user backend**. Something in the VMM must act as the **vhost-user frontend** and connect to `--socket`. Your options:
+
+| Frontend | Status | Notes |
+|----------|--------|-------|
+| **Firecracker** (generic vhost-user) | Needs recent build | [PR #5773](https://github.com/firecracker-microvm/firecracker/pull/5773) adds `PUT /vhost-user-devices/{id}` so virtio-fs works without native Firecracker virtio-fs code. `fc-runner` targets this API. |
+| **Cloud Hypervisor** | Works today | First-class virtio-fs + vhost-user; point `--socket` at the same path. No Firecracker-specific API. |
+| **QEMU** | Works today | `virtiofsd` / custom daemon via `-chardev socket` + `vhost-user-fs-pci` device. |
+| **crosvm** | Works today | Can run vhost-user fs backends against a virtio-fs device. |
+| **Stock Firecracker (released)** | No virtio-fs | Only block/net/vsock unless you build from the generic vhost-user branch. |
+
+**You do not need to change `fc-vhostfsd` between these** — only the VMM configuration differs. `fc-runner` is Firecracker-specific; for Cloud Hypervisor or QEMU, run `fc-vhostfsd` manually and wire the socket in that VMM's config.
+
+## Guest kernel (`vmlinux`)
+
+You need a **Linux guest kernel with virtio-fs**, not a container host kernel. Minimum config:
+
+- `CONFIG_VIRTIO_MMIO=y` (Firecracker uses MMIO virtio, not PCI)
+- `CONFIG_VIRTIO_FS=y` and `CONFIG_VIRTIO_FS_VIRTIO_MEM=y` (if available)
+- `CONFIG_EXT4` / `CONFIG_BLK_DEV` not required when root is virtiofs
+- `CONFIG_SERIAL_8250_CONSOLE=y`, `CONFIG_VT=y` for `console=ttyS0`
+- `CONFIG_DEVTMPFS=y`, `CONFIG_TMPFS=y`
+
+**Easiest path for Firecracker:** use the upstream CI-built kernel artifacts attached to [Firecracker releases](https://github.com/firecracker-microvm/firecracker/releases) (the `vmlinux` asset), or build from [`resources/guest_configs`](https://github.com/firecracker-microvm/firecracker/tree/main/resources/guest_configs) with `virtio_fs` enabled.
+
+Example cmdline (what `fc-runner` generates):
+
+```
+console=ttyS0 reboot=k panic=1 pci=off init=/bin/sh rootfstype=virtiofs root=/ root=rootfs
+```
+
+The image must contain `/bin/sh` (or change `init=`). Alpine works well for smoke tests. The `root=rootfs` tag must match `--tag` on `fc-vhostfsd`.
+
+**Cloud Hypervisor / QEMU** often use the same `vmlinux`; only the virtio transport differs (PCI vs MMIO) — match the kernel to your VMM's virtio bus.
+
 ## Run the Firecracker example
 
 ```bash

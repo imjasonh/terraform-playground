@@ -1,13 +1,14 @@
 //! vhost-user virtio-fs daemon exposing an on-demand OCI image rootfs.
 
 mod backend;
+mod metrics_server;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context as _;
 use clap::Parser;
-use fc_oci_fs::{ImageFs, RegistryClient};
+use fc_oci_fs::{metrics, ImageFs, RegistryClient};
 use fuse_backend_rs::api::server::Server;
 use log::info;
 use tokio::runtime::Runtime;
@@ -35,11 +36,18 @@ struct Args {
     /// virtio-fs tag visible inside the guest
     #[arg(long, default_value = "rootfs")]
     tag: String,
+
+    /// Prometheus metrics listen address (GET /metrics)
+    #[arg(long, default_value = "127.0.0.1:9100")]
+    metrics_addr: String,
 }
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();
     let args = Args::parse();
+
+    let cache_dir: Arc<std::path::Path> = Arc::from(args.cache_dir.as_path());
+    let _metrics = metrics_server::spawn_metrics_server(&args.metrics_addr, cache_dir.clone());
 
     let rt = Runtime::new().context("create tokio runtime")?;
     let mut registry = RegistryClient::new(&args.cache_dir);
@@ -76,6 +84,7 @@ fn main() -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&args.socket);
     let mut listener = Listener::new(&args.socket, true).context("bind vhost-user socket")?;
     daemon.start(&mut listener).map_err(|e| anyhow::anyhow!("start daemon: {e:?}"))?;
+    metrics::mark_startup_ready();
     info!("vhost-user virtio-fs daemon listening on {}", args.socket.display());
     daemon.wait().map_err(|e| anyhow::anyhow!("daemon exited: {e:?}"))?;
     Ok(())

@@ -13,6 +13,7 @@ use fuse_backend_rs::api::BackendFileSystem;
 
 use crate::error::Result;
 use crate::gz::IndexedLayer;
+use crate::metrics;
 use crate::tar_index::TarEntry;
 
 const ATTR_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -233,6 +234,7 @@ impl FileSystem for OverlayFs {
     }
 
     fn lookup(&self, _ctx: &Context, parent: Self::Inode, name: &CStr) -> io::Result<Entry> {
+        metrics::record_fuse_request();
         let name = name.to_string_lossy();
         let nodes = self.nodes.lock().unwrap();
         let parent_node = nodes
@@ -301,6 +303,7 @@ impl FileSystem for OverlayFs {
         let n = layer
             .read_file(&location.entry, offset, &mut buf)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        metrics::record_fuse_read(n as u64);
         w.write(&buf[..n])?;
         Ok(n)
     }

@@ -1,11 +1,13 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use indexed_deflate::{AccessPointSpan, GzDecoder, GzIndexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::metrics;
 use crate::registry::{LocalBlob, RangeBlob};
 use crate::tar_index::{TarEntry, TarIndex};
 
@@ -121,9 +123,11 @@ fn build_index_and_toc(
 ) -> Result<TarIndex> {
     let blob_path = index_path.with_extension("blob");
     if !blob_path.exists() {
-        std::io::copy(&mut source, &mut File::create(&blob_path)?)?;
+        let copied = std::io::copy(&mut source, &mut File::create(&blob_path)?)?;
+        metrics::record_full_blob_download(copied);
     }
 
+    let index_started = Instant::now();
     let gz = File::open(&blob_path)?;
     let mut index_file = File::options()
         .create(true)
@@ -158,6 +162,7 @@ fn build_index_and_toc(
         });
     }
     builder.finish()?;
+    metrics::record_index_build(index_started.elapsed());
 
     let toc = TarIndex::from_entries(entries);
     let cached = CachedLayerIndex {

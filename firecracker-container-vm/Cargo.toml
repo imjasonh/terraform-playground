@@ -42,4 +42,5 @@ virtio-queue = "0.17"
 vm-memory = "0.17"
 vmm-sys-util = "0.15"
 libc = "0.2"
+docker_credential = "1.4"
 criterion = { version = "0.5", features = ["html_reports"] }
