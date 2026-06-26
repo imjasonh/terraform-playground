@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>kubescheduler — the game</title>
+    <meta
+      name="description"
+      content="A browser game where you play the Kubernetes scheduler: bin-pack pods onto nodes while respecting selectors, taints and affinity, and manage node autoscaling for the best latency and utilization."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%98%B8%EF%B8%8F%3C/text%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">☸</span>
+        <div>
+          <h1>kube<span>scheduler</span></h1>
+          <p class="tagline">you are the control plane</p>
+        </div>
+      </div>
+      <div id="kpis" class="kpis"><!-- KPI tiles injected here --></div>
+    </header>
+
+    <div class="toolbar">
+      <div class="tool-group">
+        <label class="field">
+          <span>Scenario</span>
+          <select id="scenario"></select>
+        </label>
+        <button id="reset" class="btn ghost" title="Restart the current scenario">↺ Reset</button>
+      </div>
+
+      <div class="tool-group">
+        <button id="playpause" class="btn primary">▶ Start</button>
+        <div class="speed" role="group" aria-label="Simulation speed">
+          <button class="btn chip speed-btn" data-speed="1">1×</button>
+          <button class="btn chip speed-btn" data-speed="2">2×</button>
+          <button class="btn chip speed-btn" data-speed="4">4×</button>
+        </div>
+        <span id="clock" class="clock">00:00</span>
+      </div>
+
+      <div class="tool-group">
+        <label class="field">
+          <span>Node pool</span>
+          <select id="nodetype"></select>
+        </label>
+        <button id="addnode" class="btn primary" title="Provision a new node (takes time to boot)">+ Add node</button>
+      </div>
+
+      <div class="tool-group toggles">
+        <label class="switch" title="Let the scheduler auto-bind pending pods to the best node">
+          <input type="checkbox" id="autoschedule" />
+          <span>Auto-schedule</span>
+        </label>
+        <label class="switch" title="Let the cluster autoscaler add/remove nodes automatically">
+          <input type="checkbox" id="autoscale" />
+          <span>Cluster autoscaler</span>
+        </label>
+        <button id="help" class="btn ghost" title="How to play">? Help</button>
+      </div>
+    </div>
+
+    <main class="layout">
+      <section class="panel nodes">
+        <div class="panel-head">
+          <h2>Nodes</h2>
+          <span id="node-summary" class="muted"></span>
+        </div>
+        <div id="nodegrid" class="nodegrid"><!-- node cards --></div>
+      </section>
+
+      <aside class="panel queue">
+        <div class="panel-head">
+          <h2>Pending pods</h2>
+          <span id="queue-summary" class="muted"></span>
+        </div>
+        <p class="hint" id="queue-hint">Click a pod to highlight where it can land, then click a node — or drag it onto one.</p>
+        <div id="queuelist" class="queuelist"><!-- pending pod cards --></div>
+      </aside>
+    </main>
+
+    <section class="panel log">
+      <div class="panel-head">
+        <h2>Event log</h2>
+        <span class="muted">scheduler &amp; cluster events</span>
+      </div>
+      <div id="eventlog" class="eventlog"></div>
+    </section>
+
+    <div id="toast" class="toast" aria-live="polite"></div>
+
+    <div id="help-modal" class="modal" hidden>
+      <div class="modal-card">
+        <button id="help-close" class="modal-close" aria-label="Close">✕</button>
+        <h2>How to play</h2>
+        <p>
+          You are the Kubernetes <strong>scheduler</strong> and <strong>cluster operator</strong>.
+          Pods stream into the <em>Pending</em> queue and you must bind each one to a node that
+          satisfies all of its constraints — then keep the cluster cheap, busy, and responsive.
+        </p>
+        <h3>Scheduling a pod</h3>
+        <ul>
+          <li><strong>Click</strong> a pending pod to select it. Feasible nodes glow green; infeasible nodes are dimmed and show the blocking reason.</li>
+          <li><strong>Click a green node</strong> (or <strong>drag</strong> the pod onto it) to bind it.</li>
+          <li>Hit <strong>⚡</strong> on a pod to auto-place just that one on its best node.</li>
+        </ul>
+        <h3>The constraints (just like real k8s)</h3>
+        <ul>
+          <li><strong>Resources</strong> — a pod's CPU/memory/GPU requests must fit in the node's free capacity.</li>
+          <li><strong>nodeSelector</strong> — the node must carry the required label (e.g. <code>disktype=ssd</code>).</li>
+          <li><strong>Taints &amp; tolerations</strong> — a node's <code>NoSchedule</code> taint (e.g. <code>nvidia.com/gpu</code>, <code>spot</code>) blocks pods that don't tolerate it.</li>
+          <li><strong>Pod anti-affinity</strong> — two replicas of the same app can't share a node.</li>
+          <li><strong>Cordon</strong> — cordoned/booting nodes won't accept new pods.</li>
+        </ul>
+        <h3>Operating the cluster</h3>
+        <ul>
+          <li><strong>+ Add node</strong> — provision capacity. New nodes take time to boot and cost $/hr the whole time.</li>
+          <li><strong>Cordon</strong> — mark a node unschedulable without disturbing its pods.</li>
+          <li><strong>Drain</strong> — cordon and gracefully evict pods back to the queue (small penalty).</li>
+          <li><strong>Delete</strong> — terminate a node; any pods still on it are force-killed (big penalty). Drain first!</li>
+        </ul>
+        <h3>Score</h3>
+        <p>
+          Each tick you <strong>earn</strong> for cluster <strong>utilization</strong> and <strong>lose</strong> for
+          <strong>pending pods</strong> (scheduling latency) and <strong>node cost</strong>. Finishing jobs pays a bonus;
+          SLA breaches and force-kills hurt. Pack tightly, schedule fast, and only run the nodes you need.
+        </p>
+        <p class="muted">Tip: turn on <em>Auto-schedule</em> / <em>Cluster autoscaler</em> to watch a baseline policy play, then try to beat it by hand.</p>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
