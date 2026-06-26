@@ -271,7 +271,7 @@ button:focus-visible {
   grid-template-columns: 1fr 340px;
   gap: 16px;
   padding: 16px 22px;
-  align-items: start;
+  align-items: stretch;
   min-height: 0;
 }
 .panel {
@@ -292,11 +292,22 @@ button:focus-visible {
   letter-spacing: 0.3px;
 }
 
+/* The node and queue panels are flex columns whose lists scroll internally,
+   so a long cluster never overflows its row and covers the event log. */
+.nodes,
+.queue {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .nodegrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 14px;
   padding: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* --------------------------------------------------------------- node card */
@@ -543,10 +554,6 @@ button:focus-visible {
 }
 
 /* --------------------------------------------------------------- queue */
-.queue {
-  position: sticky;
-  top: 16px;
-}
 .hint {
   margin: 0;
   padding: 8px 16px;
@@ -559,7 +566,8 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: calc(100vh - 360px);
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
 }
 .empty-state {

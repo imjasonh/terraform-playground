@@ -46,12 +46,14 @@ export class UI {
     nodeSel.innerHTML = Object.values(INSTANCE_TYPES)
       .map((t) => {
         const gpu = t.gpu ? `, ${t.gpu} GPU` : "";
+        const price =
+          t.family === "spot" ? `~$${(t.cost * 0.45).toFixed(2)}/hr spot` : `$${t.cost.toFixed(2)}/hr`;
         return `<option value="${t.key}">${t.key} — ${fmtCpu(t.cpu)} vCPU / ${fmtMem(
           t.mem
-        )}${gpu} · $${t.cost.toFixed(2)}/hr</option>`;
+        )}${gpu} · ${price}</option>`;
       })
       .join("");
-    nodeSel.value = "general-large";
+    nodeSel.value = "c5.2xlarge";
   }
 
   wire() {
@@ -285,7 +287,7 @@ export class UI {
       { l: "Running", v: g.runningCount(), cls: "" },
       { l: "Nodes", v: `${ready}/${s.nodes.length}`, cls: "" },
       { l: "Cost", v: `$${g.hourlyCost().toFixed(2)}/hr`, cls: "" },
-      { l: "Spot price", v: `${spot.toFixed(2)}×`, cls: spot >= 1.5 ? "bad" : spot <= 0.8 ? "good" : "" },
+      { l: "spot vs on-dmd", v: `${spot.toFixed(2)}×`, cls: spot <= 0.5 ? "good" : spot >= 0.75 ? "bad" : "" },
       {
         l: s.upgradePending ? `upgrade: ${outdated} left` : "k8s version",
         v: `v1.${s.clusterMinor}`,
@@ -346,7 +348,9 @@ export class UI {
       .map((t) => `<span class="tag taint">⛔ ${t.key}=${t.value}:${t.effect}</span>`)
       .join("");
     const spotTag = node.spot
-      ? `<span class="tag spot">⚡ spot $${(node.cost * s.spotPrice).toFixed(2)}/hr</span>`
+      ? `<span class="tag spot">⚡ spot $${(node.cost * s.spotPrice).toFixed(2)}/hr · −${Math.round(
+          (1 - s.spotPrice) * 100
+        )}%</span>`
       : "";
 
     const cpuBar = this.meter("CPU", used.cpu, node.cpu, meterPods, "cpu");
