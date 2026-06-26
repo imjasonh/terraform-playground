@@ -38,7 +38,7 @@ test("selectorMatches enforces every label", () => {
 });
 
 test("resource fit blocks oversized pods", () => {
-  const node = nodeFrom("general-medium"); // 4000m / 8192Mi
+  const node = nodeFrom("c5.xlarge"); // 4000m / 8192Mi
   const big = { cpu: 5000, mem: 1024, gpu: 0, nodeSelector: {}, tolerations: [], antiAffinity: false, app: "x" };
   const fit = evaluateFit(big, node, []);
   assert.equal(fit.ok, false);
@@ -46,7 +46,7 @@ test("resource fit blocks oversized pods", () => {
 });
 
 test("free resources subtract running pods", () => {
-  const node = nodeFrom("general-large"); // 8000m / 16384
+  const node = nodeFrom("c5.2xlarge"); // 8000m / 16384Mi
   const pods = [
     { cpu: 1000, mem: 2048, gpu: 0 },
     { cpu: 500, mem: 512, gpu: 0 },
@@ -57,15 +57,15 @@ test("free resources subtract running pods", () => {
 });
 
 test("nodeSelector for ssd is enforced", () => {
-  const hdd = nodeFrom("general-large"); // disktype hdd
-  const ssd = nodeFrom("ssd-large"); // disktype ssd
+  const hdd = nodeFrom("c5.2xlarge"); // disktype network
+  const ssd = nodeFrom("c5d.2xlarge"); // disktype ssd
   const pod = { cpu: 500, mem: 512, gpu: 0, nodeSelector: { disktype: "ssd" }, tolerations: [], antiAffinity: false, app: "cache" };
   assert.equal(evaluateFit(pod, hdd, []).ok, false);
   assert.equal(evaluateFit(pod, ssd, []).ok, true);
 });
 
 test("gpu taint requires toleration and gpu capacity", () => {
-  const gpuNode = nodeFrom("gpu-xlarge");
+  const gpuNode = nodeFrom("g4dn.xlarge");
   const noTol = { cpu: 500, mem: 512, gpu: 0, nodeSelector: {}, tolerations: [], antiAffinity: false, app: "frontend" };
   // frontend has no toleration -> blocked by taint
   assert.equal(evaluateFit(noTol, gpuNode, []).ok, false);
@@ -80,7 +80,7 @@ test("gpu taint requires toleration and gpu capacity", () => {
 });
 
 test("anti-affinity prevents two same-app pods on one node", () => {
-  const node = nodeFrom("general-large");
+  const node = nodeFrom("c5.2xlarge");
   const a = { cpu: 250, mem: 256, gpu: 0, nodeSelector: {}, tolerations: [], antiAffinity: true, app: "frontend" };
   const b = { cpu: 250, mem: 256, gpu: 0, nodeSelector: {}, tolerations: [], antiAffinity: true, app: "frontend" };
   assert.equal(evaluateFit(b, node, [a]).ok, false);
@@ -88,15 +88,15 @@ test("anti-affinity prevents two same-app pods on one node", () => {
 });
 
 test("cordoned nodes are unschedulable", () => {
-  const node = nodeFrom("general-large");
+  const node = nodeFrom("c5.2xlarge");
   node.status = "Cordoned";
   const pod = { cpu: 250, mem: 256, gpu: 0, nodeSelector: {}, tolerations: [], antiAffinity: false, app: "frontend" };
   assert.equal(evaluateFit(pod, node, []).ok, false);
 });
 
 test("bestNodeFor packs onto the fuller feasible node", () => {
-  const n1 = { ...nodeFrom("general-large"), id: "n1" };
-  const n2 = { ...nodeFrom("general-large"), id: "n2" };
+  const n1 = { ...nodeFrom("c5.2xlarge"), id: "n1" };
+  const n2 = { ...nodeFrom("c5.2xlarge"), id: "n2" };
   const existing = { cpu: 4000, mem: 4096, gpu: 0, app: "api" };
   const podsByNode = (id) => (id === "n1" ? [existing] : []);
   const pod = { cpu: 500, mem: 512, gpu: 0, nodeSelector: {}, tolerations: [], antiAffinity: false, app: "frontend" };
@@ -160,7 +160,7 @@ test("autoscaler provisions a GPU node when ml-train is stuck pending", () => {
   let addedGpu = false;
   for (let i = 0; i < 40 && !addedGpu; i++) {
     game.tick();
-    addedGpu = game.state.nodes.some((n) => n.type === "gpu-xlarge");
+    addedGpu = game.state.nodes.some((n) => n.type === "g4dn.xlarge");
   }
   assert.equal(addedGpu, true);
 });
@@ -184,7 +184,7 @@ test("daemonsets run one pod per node, match selectors, and never queue", () => 
   assert.ok(daemons.every((p) => p.daemonOf));
   assert.equal(game.state.pendingIds.length, 0); // daemonsets are not scheduled via the queue
 
-  const gpu = game.addNode("gpu-xlarge");
+  const gpu = game.addNode("g4dn.xlarge");
   bootNode(game, gpu);
   const gpuReady = game.nodeById(gpu.id);
   const names = game.podsOnNode(gpuReady).filter((p) => p.kind === "daemon").map((p) => p.daemonOf);
@@ -221,7 +221,7 @@ test("drain keeps daemonset pods; delete purges them with no pod leak", () => {
 
 test("spot reclamation evicts workload, drops the node, and is counted", () => {
   const game = new Game("steady");
-  const spot = game.addNode("spot-medium");
+  const spot = game.addNode("c5.xlarge-spot");
   bootNode(game, spot);
   const node = game.nodeById(spot.id);
   assert.equal(node.status, "Ready");
@@ -245,7 +245,7 @@ test("spot price fluctuates over time but stays in bounds", () => {
   const seen = new Set();
   for (let i = 0; i < 300; i++) {
     game.tick();
-    assert.ok(game.state.spotPrice >= 0.2 && game.state.spotPrice <= 3);
+    assert.ok(game.state.spotPrice >= 0.2 && game.state.spotPrice <= 0.95);
     seen.add(game.state.spotPrice.toFixed(3));
   }
   assert.ok(seen.size > 5, "spot price should vary");
