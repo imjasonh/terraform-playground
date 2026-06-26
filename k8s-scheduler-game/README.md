@@ -8,6 +8,11 @@ anti-affinity — while deciding when to **provision new nodes** and when to **c
 and terminate** the ones you no longer need. Your score rewards low **scheduling latency**
 and high **utilization**, and punishes wasted spend, SLA breaches, and disruptive evictions.
 
+You'll also have to handle the things that make running a real cluster hard:
+**DaemonSets** that put per-node overhead on every machine, **spot nodes** that are dirt cheap
+at a fluctuating price but get **reclaimed without warning**, and **Kubernetes version upgrades**
+that force you to responsibly restart every node without dropping your workloads.
+
 ![Screenshot of the game](docs/screenshot.png)
 
 It is written in **zero-dependency vanilla ES modules** (no framework, no build step) and
@@ -51,17 +56,38 @@ Keep the queue empty, keep nodes busy, and don't overspend.
 | **Pod anti-affinity (soft / spread)** | The scheduler _prefers_ to spread replicas across nodes (used by `frontend`/`api`); influences scoring, never blocks. |
 | **Cordon / not-ready** | Cordoned or still-booting nodes won't accept new pods. |
 
+### Curveballs
+
+- **DaemonSets** ⚙ — the controller automatically runs node agents (`node-exporter`,
+  `fluent-bit`, `kube-proxy`, and a GPU `nvidia-device-plugin` on GPU nodes) on **every**
+  matching node. They tolerate every taint, can't be moved, and consume capacity everywhere —
+  so they're per-node overhead that rewards running **fewer, larger** nodes. `kubectl drain`
+  leaves them alone; they're recreated whenever a node joins or finishes an upgrade.
+- **Spot nodes** ⚡ — `spot-medium`/`spot-large` cost a fraction of on-demand, but they're
+  billed at a **fluctuating spot price** and the cloud can **reclaim them at any time**. You get
+  a brief **Reclaiming** countdown to drain them gracefully; if you don't, their pods are
+  evicted back to the queue. Only put fault-tolerant work (e.g. `batch`) on spot.
+- **Cluster upgrades** — every so often the control plane jumps a minor version and every node
+  falls behind (its version badge turns amber). Restart them **responsibly** — a few at a time,
+  so workloads always have somewhere to land — using each node's **⤴ Upgrade** button (drain +
+  reboot onto the new version). Out-of-date nodes bleed score until the rollout finishes, and
+  completing the whole fleet pays a bonus.
+
 ### Operating the cluster
 
 - **➕ Add node** — provision capacity from a node pool. New nodes spend time **Provisioning**
   (and cost money the whole time) before they go **Ready**.
 - **Cordon** — mark a node unschedulable without disturbing its running pods.
-- **Drain** — cordon **and** gracefully evict its pods back to the queue (small penalty).
+- **Drain** — cordon **and** gracefully evict its **workload** pods back to the queue (small
+  penalty); DaemonSet pods stay put.
+- **⤴ Upgrade** — appears on out-of-date nodes: drains then reboots the node onto the current
+  Kubernetes version.
 - **Delete** — terminate a node. Any pods still on it are **force-killed** (big penalty) — so
   drain first!
 
-Flip on **Auto-schedule** and **Cluster autoscaler** to watch a baseline policy play the game,
-then turn them off and try to beat it by hand.
+Flip on **Auto-schedule** and **Cluster autoscaler** to watch a baseline policy play the game —
+it auto-places pods, scales capacity, recovers from spot reclaims, and performs a safe **rolling
+upgrade** when a new version lands — then turn them off and try to beat it by hand.
 
 ---
 
@@ -77,13 +103,17 @@ score += utilization × 30
 ```
 
 Plus one-off effects: finishing a job **+8**, a graceful drain eviction **−2/pod**, a forced
-kill **−10/pod**, and an SLA breach (a pod left pending too long) **−40**.
+kill **−10/pod**, an SLA breach (a pod left pending too long) **−40**, a spot reclaim **−1.5/pod**,
+and—while an upgrade is pending—**−0.3/tick** for every node still out of date, offset by a
+**+35** bonus when the whole fleet finishes the rollout. Spot nodes are billed at the **live
+spot price**, so cheap capacity gets pricier (and more interruption-prone) when the market spikes.
 
 The headline KPIs in the top bar are the ones the prompt asks you to optimize:
 
 - **Utilization** — average CPU+memory packing across the nodes you're paying for.
 - **Avg latency** — mean time pods waited in `Pending` before being scheduled.
-- …alongside pending/running counts, ready/total nodes, hourly cost, and SLA breaches.
+- …alongside pending/running counts, ready/total nodes, hourly cost, **spot price**, the current
+  **cluster version** (with how many nodes still need upgrading), and SLA breaches.
 
 ---
 
@@ -97,7 +127,9 @@ The headline KPIs in the top bar are the ones the prompt asks you to optimize:
 | **Production Chaos** | Everything at once, high churn across every workload type. Hard mode. |
 
 Workloads are minted from `Deployment`-like templates with bounded replica counts (so the
-cluster reaches a steady state), and the arrival stream is seeded for reproducible runs.
+cluster reaches a steady state), and the arrival stream is seeded for reproducible runs. Every
+scenario also throws periodic **cluster upgrades** at you (more often in Chaos), and spot
+interruptions can strike whenever you're running spot capacity.
 
 ---
 
@@ -133,9 +165,11 @@ npm test          # node --test — predicate, engine, soak & balance tests (no 
 ```
 
 The suite covers the scheduling predicates (resources, selectors, taints, anti-affinity,
-cordon), engine actions (schedule/drain/evict/job-completion), the autoscaler, determinism of
-the workload generator, a long "soak" run that asserts the cluster never overcommits a node,
-and a balance check that every scenario stays healthy under full automation.
+cordon), engine actions (schedule/drain/evict/job-completion), the autoscaler, **DaemonSet**
+reconciliation and overhead, **spot** reclamation and price bounds, **node upgrades** (drain +
+reboot, rollout-completion bonus, and the autopilot's rolling upgrade), determinism of the
+workload generator, a long "soak" run that asserts the cluster never overcommits a node, and a
+balance check that every scenario stays healthy under full automation.
 
 An optional end-to-end check drives the real UI in headless Chrome (no npm deps — it uses
 Node's built-in `fetch`/`WebSocket` over the DevTools Protocol):

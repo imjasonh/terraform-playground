@@ -117,12 +117,29 @@ async function main() {
     game.state.speed=4; game.state.paused=false; return 'ok'; })()`);
   await sleep(8000);
 
+  // Build a richer scene for the screenshot: add a spot node and kick off a
+  // cluster upgrade so daemonsets, spot pricing and the rollout are all visible.
+  await evaluate(`(() => { const {game,ui}=window.__kube;
+    game.addNode('spot-large'); game.triggerUpgrade();
+    for (let i=0;i<8;i++) game.tick(); ui.markDirty(); ui.render(); return 'ok'; })()`);
+  await sleep(500);
+
   const stats = JSON.parse(
-    await evaluate(`(() => { const {game}=window.__kube; return JSON.stringify({
-      nodeCards: document.querySelectorAll('.node').length,
-      pending: game.state.pendingIds.length,
-      running: game.runningCount(),
-      util: Math.round(game.clusterUtilization()*100),
+    await evaluate(`(() => { const {game}=window.__kube;
+      let daemonPods=0, spotNodes=0;
+      for (const p of game.state.pods.values()) if (p.kind==='daemon') daemonPods++;
+      for (const n of game.state.nodes) if (n.spot) spotNodes++;
+      return JSON.stringify({
+        nodeCards: document.querySelectorAll('.node').length,
+        daemonChips: document.querySelectorAll('.podchip.daemon').length,
+        daemonPods, spotNodes,
+        outdated: document.querySelectorAll('.node.outdated').length,
+        pending: game.state.pendingIds.length,
+        running: game.runningCount(),
+        util: Math.round(game.clusterUtilization()*100),
+        version: 'v1.'+game.state.clusterMinor,
+        spotPrice: Number(game.state.spotPrice.toFixed(2)),
+        upgradePending: game.state.upgradePending,
     }); })()`)
   );
   console.log("stats:", stats);
@@ -160,6 +177,8 @@ async function main() {
   if (exceptions.length) problems.push(`exceptions: ${exceptions.join(" | ")}`);
   if (consoleErrors.length) problems.push(`console errors: ${consoleErrors.join(" | ")}`);
   if (stats.nodeCards === 0) problems.push("no node cards rendered");
+  if (stats.daemonPods === 0) problems.push("no daemonset pods present");
+  if (stats.daemonChips === 0) problems.push("no daemonset chips rendered");
   if (!manual.skipped && !manual.sawFeasible) problems.push("feasibility highlight missing");
 
   if (problems.length) {
