@@ -153,6 +153,10 @@ export class UI {
       if (act === "cordon") this.game.cordon(id);
       else if (act === "drain") this.game.drain(id);
       else if (act === "delete") this.game.deleteNode(id);
+      else if (act === "upgrade") {
+        const res = this.game.upgradeNode(id);
+        if (!res.ok) this.toast(`Can't upgrade: ${res.reason}`, "bad");
+      }
       this.markDirty();
       return;
     }
@@ -233,6 +237,13 @@ export class UI {
   // --- rendering -----------------------------------------------------------
   render() {
     if (this.dragging) return; // don't yank the DOM out from under a drag
+    // Surface upgrade events even between dirty renders so they never get missed.
+    const minor = this.game.state.clusterMinor;
+    if (this._lastMinor != null && minor > this._lastMinor) {
+      this.toast(`Control plane upgraded to v1.${minor} — responsibly restart every node!`, "warn");
+      this.markDirty();
+    }
+    this._lastMinor = minor;
     if (!this.dirty) return;
     this.dirty = false;
     this.renderKpis();
@@ -264,6 +275,8 @@ export class UI {
     const pending = s.pendingIds.length;
     const ready = g.schedulableNodes().length;
     const lat = g.avgLatencySeconds();
+    const outdated = g.outdatedNodeCount();
+    const spot = s.spotPrice;
     const tiles = [
       { l: "Score", v: Math.round(s.score), cls: "score" },
       { l: "Utilization", v: `${Math.round(util * 100)}%`, cls: util >= 0.5 ? "good" : util < 0.3 ? "warn" : "" },
@@ -272,6 +285,12 @@ export class UI {
       { l: "Running", v: g.runningCount(), cls: "" },
       { l: "Nodes", v: `${ready}/${s.nodes.length}`, cls: "" },
       { l: "Cost", v: `$${g.hourlyCost().toFixed(2)}/hr`, cls: "" },
+      { l: "Spot price", v: `${spot.toFixed(2)}×`, cls: spot >= 1.5 ? "bad" : spot <= 0.8 ? "good" : "" },
+      {
+        l: s.upgradePending ? `upgrade: ${outdated} left` : "k8s version",
+        v: `v1.${s.clusterMinor}`,
+        cls: s.upgradePending ? "warn" : "good",
+      },
       { l: "SLA breaches", v: s.metrics.slaBreaches, cls: s.metrics.slaBreaches > 0 ? "bad" : "good" },
     ];
     this.els.kpis.innerHTML = tiles
@@ -297,7 +316,12 @@ export class UI {
 
   nodeCard(node, selectedPod) {
     const g = this.game;
+    const s = g.state;
     const pods = g.podsOnNode(node);
+    const workload = pods.filter((p) => p.kind !== "daemon");
+    const daemons = pods.filter((p) => p.kind === "daemon");
+    // Draw daemonset overhead first so it sits at the base of each meter.
+    const meterPods = [...daemons, ...workload];
     const used = pods.reduce(
       (a, p) => ({ cpu: a.cpu + p.cpu, mem: a.mem + p.mem, gpu: a.gpu + p.gpu }),
       { cpu: 0, mem: 0, gpu: 0 }
@@ -311,6 +335,9 @@ export class UI {
       why = fit.ok ? "" : fit.reasons[0];
     }
 
+    const outdated = node.minor < s.clusterMinor;
+    const busy = ["Provisioning", "Upgrading", "Reclaiming"].includes(node.status);
+
     const labels = Object.entries(node.labels)
       .filter(([k]) => k !== "node.kubernetes.io/instance-type")
       .map(([k, v]) => `<span class="tag">${shortLabel(k)}=${v}</span>`)
@@ -318,52 +345,78 @@ export class UI {
     const taints = (node.taints || [])
       .map((t) => `<span class="tag taint">⛔ ${t.key}=${t.value}:${t.effect}</span>`)
       .join("");
+    const spotTag = node.spot
+      ? `<span class="tag spot">⚡ spot $${(node.cost * s.spotPrice).toFixed(2)}/hr</span>`
+      : "";
 
-    const cpuBar = this.meter("CPU", used.cpu, node.cpu, pods, "cpu");
-    const memBar = this.meter("Mem", used.mem, node.mem, pods, "mem");
+    const cpuBar = this.meter("CPU", used.cpu, node.cpu, meterPods, "cpu");
+    const memBar = this.meter("Mem", used.mem, node.mem, meterPods, "mem");
     const gpuLine = node.gpu
       ? `<div class="gpu-line">GPU <b>${used.gpu}/${node.gpu}</b> nvidia.com/gpu</div>`
       : "";
 
-    const podchips = pods.length
-      ? pods
-          .map(
-            (p) =>
-              `<span class="podchip" style="background:${p.color}" title="${p.name} · ${fmtCpu(
-                p.cpu
-              )} vCPU / ${fmtMem(p.mem)}${p.gpu ? ` / ${p.gpu} GPU` : ""}">${p.app}</span>`
-          )
-          .join("")
-      : `<span class="podchip empty">empty</span>`;
+    const workChips = workload
+      .map(
+        (p) =>
+          `<span class="podchip" style="background:${p.color}" title="${p.name} · ${fmtCpu(
+            p.cpu
+          )} vCPU / ${fmtMem(p.mem)}${p.gpu ? ` / ${p.gpu} GPU` : ""}">${p.app}</span>`
+      )
+      .join("");
+    const daemonChips = daemons
+      .map(
+        (p) =>
+          `<span class="podchip daemon" title="DaemonSet ${p.daemonOf} · ${fmtCpu(p.cpu)} vCPU / ${fmtMem(
+            p.mem
+          )}">⚙ ${p.daemonOf}</span>`
+      )
+      .join("");
+    const podchips = workChips || daemonChips ? workChips + daemonChips : `<span class="podchip empty">empty</span>`;
 
-    const provisioning =
-      node.status === "Provisioning"
-        ? `<div class="muted">booting… ${node.provisioningTicksLeft} ticks left</div>`
+    const booting = busy && node.status !== "Reclaiming"
+      ? `<div class="muted">${node.status === "Upgrading" ? "upgrading" : "booting"}… ${
+          node.provisioningTicksLeft
+        } ticks left</div>`
+      : "";
+    const reclaim =
+      node.status === "Reclaiming"
+        ? `<div class="reclaim">⚠ spot reclaim in ${(node.spotWarnTicksLeft / 4).toFixed(1)}s — drain to save pods!</div>`
         : "";
 
     const cordonLabel = node.status === "Cordoned" ? "Uncordon" : "Cordon";
+    const ver = `v1.${node.minor}`;
+    const upgradeBtn =
+      outdated && !busy
+        ? `<button class="btn upgrade" data-action="upgrade" data-node="${node.id}" title="Drain & restart this node onto v1.${s.clusterMinor}">⤴ Upgrade to v1.${s.clusterMinor}</button>`
+        : "";
 
     return `
-    <div class="node ${feasClass}" data-node="${node.id}" data-status="${node.status}">
+    <div class="node ${feasClass} ${outdated ? "outdated" : ""}" data-node="${node.id}" data-status="${node.status}">
       <div class="node-top">
         <div>
           <div class="nname">${node.name}</div>
-          <div class="ntype">${node.type}</div>
+          <div class="ntype">${node.type} · <span class="ver ${outdated ? "stale" : ""}">${ver}</span></div>
         </div>
         <span class="badge ${node.status}">${node.status}</span>
       </div>
-      <div class="chips">${labels}${taints}</div>
-      ${provisioning}
+      <div class="chips">${labels}${spotTag}${taints}</div>
+      ${reclaim}
+      ${booting}
       ${cpuBar}
       ${memBar}
       ${gpuLine}
       <div class="podchips">${podchips}</div>
       <div class="why">✕ ${why}</div>
+      ${upgradeBtn}
       <div class="node-actions">
         <button class="btn" data-action="cordon" data-node="${node.id}" ${
-      node.status === "Provisioning" ? "disabled" : ""
+      node.status === "Provisioning" || node.status === "Upgrading" || node.status === "Reclaiming"
+        ? "disabled"
+        : ""
     }>${cordonLabel}</button>
-        <button class="btn" data-action="drain" data-node="${node.id}">Drain</button>
+        <button class="btn" data-action="drain" data-node="${node.id}" ${
+      node.status === "Provisioning" || node.status === "Upgrading" ? "disabled" : ""
+    }>Drain</button>
         <button class="btn danger" data-action="delete" data-node="${node.id}">Delete</button>
       </div>
     </div>`;

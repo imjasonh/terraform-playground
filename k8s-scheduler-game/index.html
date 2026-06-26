@@ -122,14 +122,23 @@
         <ul>
           <li><strong>+ Add node</strong> — provision capacity. New nodes take time to boot and cost $/hr the whole time.</li>
           <li><strong>Cordon</strong> — mark a node unschedulable without disturbing its pods.</li>
-          <li><strong>Drain</strong> — cordon and gracefully evict pods back to the queue (small penalty).</li>
+          <li><strong>Drain</strong> — cordon and gracefully evict workload pods back to the queue (small penalty). DaemonSet pods stay, just like <code>kubectl drain</code>.</li>
           <li><strong>Delete</strong> — terminate a node; any pods still on it are force-killed (big penalty). Drain first!</li>
+          <li><strong>⤴ Upgrade</strong> — appears on out-of-date nodes: drains, then reboots the node onto the new version.</li>
+        </ul>
+        <h3>Curveballs</h3>
+        <ul>
+          <li><strong>DaemonSets</strong> ⚙ — node agents (logging, metrics, kube-proxy, GPU plugin) that the controller runs on <em>every</em> node automatically. They're per-node overhead you can't move, so fewer/larger nodes waste less.</li>
+          <li><strong>Spot nodes</strong> ⚡ — much cheaper, but billed at a <em>fluctuating spot price</em> and reclaimed without warning. You get a short <em>Reclaiming</em> countdown — drain it to save pods. Run only fault-tolerant work (batch) on spot.</li>
+          <li><strong>Cluster upgrades</strong> — every so often the control plane jumps a version and every node falls behind (amber <span class="ver stale">v1.x</span>). Restart them <em>responsibly</em>, a few at a time, so workloads always have somewhere to land. Outdated nodes leak score until the rollout completes; finishing it pays a bonus.</li>
         </ul>
         <h3>Score</h3>
         <p>
           Each tick you <strong>earn</strong> for cluster <strong>utilization</strong> and <strong>lose</strong> for
-          <strong>pending pods</strong> (scheduling latency) and <strong>node cost</strong>. Finishing jobs pays a bonus;
-          SLA breaches and force-kills hurt. Pack tightly, schedule fast, and only run the nodes you need.
+          <strong>pending pods</strong> (scheduling latency) and <strong>node cost</strong> (spot at the live price).
+          Finishing jobs pays a bonus and completing a version rollout pays a bigger one; SLA breaches, force-kills,
+          spot losses, and lingering out-of-date nodes all hurt. Pack tightly, schedule fast, run only the nodes you need —
+          and keep the fleet patched.
         </p>
         <p class="muted">Tip: turn on <em>Auto-schedule</em> / <em>Cluster autoscaler</em> to watch a baseline policy play, then try to beat it by hand.</p>
       </div>
