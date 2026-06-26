@@ -86,7 +86,38 @@ export const INSTANCE_TYPES = {
     labels: { "node.kubernetes.io/instance-type": "spot-medium", disktype: "hdd" },
     taints: [{ key: "spot", value: "true", effect: "NoSchedule" }],
   },
+  "spot-large": {
+    key: "spot-large",
+    family: "spot",
+    cpu: 8000,
+    mem: 16384,
+    gpu: 0,
+    cost: 0.09,
+    bootTicks: 6,
+    labels: { "node.kubernetes.io/instance-type": "spot-large", disktype: "hdd" },
+    taints: [{ key: "spot", value: "true", effect: "NoSchedule" }],
+  },
 };
+
+/**
+ * DaemonSets: infrastructure pods the daemonset controller runs on EVERY node
+ * (or every node matching nodeSelector). They tolerate all taints, can't be
+ * hand-scheduled or moved, and consume capacity on every node — so they're pure
+ * per-node overhead that rewards running fewer, larger nodes. A node-local agent
+ * is recreated automatically whenever a node joins or finishes an upgrade.
+ */
+export const DAEMONSETS = [
+  { name: "node-exporter", cpu: 75, mem: 96, color: "#64748b" },
+  { name: "fluent-bit", cpu: 150, mem: 256, color: "#475569" },
+  { name: "kube-proxy", cpu: 75, mem: 96, color: "#52525b" },
+  {
+    name: "nvidia-device-plugin",
+    cpu: 50,
+    mem: 128,
+    color: "#3f6212",
+    nodeSelector: { accelerator: "nvidia-t4" },
+  },
+];
 
 /** Per-app color used throughout the UI. */
 export const APP_COLORS = {
@@ -230,6 +261,14 @@ export function sumRequests(pods) {
 /** Capacity object for a node from its instance type. */
 export function nodeCapacity(node) {
   return { cpu: node.cpu, mem: node.mem, gpu: node.gpu };
+}
+
+/**
+ * A node's current $/hr. Spot nodes are billed at the live, fluctuating spot
+ * price (a multiplier on their base cost); on-demand nodes are flat.
+ */
+export function effectiveCost(node, spotPrice = 1) {
+  return node.cost * (node.spot ? spotPrice : 1);
 }
 
 /** True if a node is currently able to accept newly scheduled pods. */

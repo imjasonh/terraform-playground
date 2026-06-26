@@ -66,6 +66,38 @@ export function createPod(appName, rng, tick) {
 }
 
 /**
+ * Mint a DaemonSet pod bound to a specific node. These are placed directly by
+ * the "daemonset controller" (bypassing the scheduler), tolerate every taint,
+ * and never appear in the pending queue.
+ */
+export function createDaemonPod(ds, node, tick) {
+  return {
+    id: nextId("ds"),
+    name: `${ds.name}-${node.name.replace("node-", "")}`,
+    app: ds.name,
+    color: ds.color || "#64748b",
+    kind: "daemon",
+    daemonOf: ds.name,
+    cpu: ds.cpu,
+    mem: ds.mem,
+    gpu: 0,
+    nodeSelector: {},
+    tolerations: [],
+    antiAffinity: false,
+    softAntiAffinity: false,
+    priority: 2000,
+    preferredZone: null,
+    status: "Running",
+    nodeId: node.id,
+    arrivalTick: tick,
+    scheduledTick: tick,
+    pendingTicks: 0,
+    slaBreached: false,
+    remainingTicks: null,
+  };
+}
+
+/**
  * Scenario catalogue. `arrival(tick, rng)` returns the expected number of pods
  * to spawn this tick (fractional values spawn probabilistically). `weights`
  * may be a function of tick to create waves.
@@ -77,6 +109,7 @@ export const SCENARIOS = {
     blurb: "A balanced, predictable workload. Great for learning the ropes.",
     startNodes: ["general-large", "general-large", "ssd-large"],
     seed: 1337,
+    upgradeEvery: 900,
     arrival: () => 0.55,
     weights: () => ({ frontend: 7, api: 6, cache: 3, postgres: 1, batch: 4 }),
   },
@@ -86,6 +119,7 @@ export const SCENARIOS = {
     blurb: "Calm baseline punctuated by big frontend/api surges. Scale up fast, scale down after.",
     startNodes: ["general-large", "ssd-large"],
     seed: 7,
+    upgradeEvery: 700,
     arrival: (tick) => {
       const phase = tick % 240;
       return phase < 60 ? 1.8 : 0.25; // ~15s storm every ~60s
@@ -103,6 +137,7 @@ export const SCENARIOS = {
     blurb: "Steady services plus periodic ML training jobs that demand GPU nodes you must provision.",
     startNodes: ["general-large", "ssd-large"],
     seed: 99,
+    upgradeEvery: 750,
     arrival: (tick) => (tick % 200 < 30 ? 1.4 : 0.5),
     weights: (tick) => {
       const burst = tick % 200 < 30;
@@ -117,6 +152,7 @@ export const SCENARIOS = {
     blurb: "Everything, everywhere, all at once. High churn across every workload type. Hard mode.",
     startNodes: ["general-large", "ssd-large"],
     seed: 42,
+    upgradeEvery: 550,
     arrival: (tick) => 0.9 + (tick % 150 < 40 ? 1.2 : 0),
     weights: () => ({ frontend: 8, api: 7, cache: 4, postgres: 2, batch: 6, "ml-train": 3 }),
   },

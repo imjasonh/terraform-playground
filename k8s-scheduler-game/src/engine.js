@@ -3,9 +3,16 @@
 // pod), and computes the score. It is intentionally UI-agnostic: the UI reads
 // `game.state` and calls these methods, then re-renders.
 
-import { INSTANCE_TYPES, ZONES, TICKS_PER_SECOND, SLA_PENDING_TICKS } from "./types.js";
-import { bestNodeFor, evaluateFit, summarizePendingReason } from "./scheduler.js";
-import { SCENARIOS, makeRng, spawnForTick } from "./workload.js";
+import {
+  INSTANCE_TYPES,
+  ZONES,
+  TICKS_PER_SECOND,
+  SLA_PENDING_TICKS,
+  DAEMONSETS,
+  effectiveCost,
+} from "./types.js";
+import { bestNodeFor, evaluateFit, selectorMatches, summarizePendingReason } from "./scheduler.js";
+import { SCENARIOS, makeRng, spawnForTick, createDaemonPod } from "./workload.js";
 
 // --- Scoring weights -------------------------------------------------------
 const UTIL_W = 30; // reward per tick at 100% cluster utilization
@@ -15,6 +22,11 @@ const COMPLETE_BONUS = 8; // reward for finishing a job
 const DRAIN_EVICT_PEN = 2; // graceful eviction (drain) penalty per pod
 const FORCE_EVICT_PEN = 10; // hard eviction (delete live node) penalty per pod
 const SLA_BREACH_PEN = 40; // one-time penalty when a pod blows its scheduling SLA
+const SPOT_RECLAIM_PEN = 1.5; // per workload pod lost to a (somewhat expected) spot interruption
+const SPOT_WARNING_TICKS = 12; // ~3s interruption notice at 4x before a spot node is reclaimed
+const SPOT_RECLAIM_BASE = 0.0035; // base per-tick probability a spot node is interrupted
+const OUTDATED_PEN = 0.3; // per outdated, still-up node per tick while an upgrade is pending
+const UPGRADE_DONE_BONUS = 35; // reward for completing a cluster-wide rollout
 const MAX_EVENTS = 240;
 
 export class Game {
@@ -38,8 +50,14 @@ export class Game {
       autoScale: false,
       events: [],
       score: 0,
+      // cluster version: nodes carry a minor version; an upgrade bumps the target.
+      clusterMinor: 30,
+      upgradePending: false,
+      // spot market: a fluctuating multiplier applied to spot node $/hr.
+      spotPrice: 1,
+      nextUpgradeTick: scenario.upgradeEvery || 0,
       // running tallies for the score breakdown panel
-      breakdown: { util: 0, latency: 0, cost: 0, jobs: 0, sla: 0, disruption: 0 },
+      breakdown: { util: 0, latency: 0, cost: 0, jobs: 0, sla: 0, disruption: 0, upgrade: 0 },
       metrics: {
         latencySum: 0,
         latencyCount: 0,
@@ -49,6 +67,8 @@ export class Game {
         slaBreaches: 0,
         evictions: 0,
         spawnedTotal: 0,
+        spotReclaims: 0,
+        nodesUpgraded: 0,
       },
       lastUtil: 0,
       scaleCooldown: 0,
@@ -93,17 +113,48 @@ export class Game {
       mem: spec.mem,
       gpu: spec.gpu,
       cost: spec.cost,
+      spot: spec.family === "spot",
+      minor: this.state.clusterMinor, // new nodes join on the current version
       labels: { ...spec.labels, "topology.kubernetes.io/zone": z },
       taints: spec.taints.map((t) => ({ ...t })),
       status: instant ? "Ready" : "Provisioning",
       provisioningTicksLeft: instant ? 0 : spec.bootTicks,
+      spotWarnTicksLeft: 0,
       podIds: [],
       idleTicks: 0,
       createdTick: this.state.tick,
     };
     this.state.nodes.push(node);
-    if (!instant) this.log("info", `Provisioning ${node.name} (${typeKey}, ${z})…`);
+    if (instant) this.reconcileDaemonSets(node);
+    else this.log("info", `Provisioning ${node.name} (${typeKey}, ${z})…`);
     return node;
+  }
+
+  /** Ensure every applicable DaemonSet has a pod on this (Ready) node. */
+  reconcileDaemonSets(node) {
+    if (node.status !== "Ready") return;
+    for (const ds of DAEMONSETS) {
+      if (ds.nodeSelector && !selectorMatches(ds.nodeSelector, node.labels)) continue;
+      const present = node.podIds.some((id) => this.state.pods.get(id)?.daemonOf === ds.name);
+      if (!present) {
+        const pod = createDaemonPod(ds, node, this.state.tick);
+        this.state.pods.set(pod.id, pod);
+        node.podIds.push(pod.id);
+      }
+    }
+  }
+
+  /** Pods on a node that are real workload (excludes DaemonSet/infra pods). */
+  workloadPodsOnNode(node) {
+    return this.podsOnNode(node).filter((p) => p.kind !== "daemon");
+  }
+
+  /** Delete a node's DaemonSet pods from the pod map (used when a node leaves). */
+  purgeDaemonPods(node) {
+    for (const id of node.podIds) {
+      const p = this.state.pods.get(id);
+      if (p && p.kind === "daemon") this.state.pods.delete(id);
+    }
   }
 
   cordon(nodeId) {
@@ -118,25 +169,28 @@ export class Game {
     }
   }
 
-  /** Graceful drain: cordon, then evict every pod back to the queue. */
+  /** Graceful drain: cordon, then evict workload pods back to the queue.
+   *  DaemonSet pods are left running, exactly like `kubectl drain`. */
   drain(nodeId) {
     const node = this.nodeById(nodeId);
     if (!node) return;
-    const pods = this.podsOnNode(node);
+    const pods = this.workloadPodsOnNode(node);
     for (const pod of pods) this.evictPod(pod, node, DRAIN_EVICT_PEN, "drain");
-    node.status = "Cordoned";
-    this.log("warn", `Drained ${node.name} (${pods.length} pod(s) rescheduled).`);
+    if (node.status !== "Reclaiming" && node.status !== "Upgrading") node.status = "Cordoned";
+    this.log("warn", `Drained ${node.name} (${pods.length} pod(s) rescheduled; daemonsets kept).`);
   }
 
-  /** Terminate a node. Any still-running pods are forcibly evicted. */
+  /** Terminate a node. Workload pods still on it are forcibly evicted. */
   deleteNode(nodeId) {
     const node = this.nodeById(nodeId);
     if (!node) return;
-    const pods = this.podsOnNode(node);
+    const pods = this.workloadPodsOnNode(node);
     for (const pod of pods) this.evictPod(pod, node, FORCE_EVICT_PEN, "force-delete");
+    this.purgeDaemonPods(node);
     this.state.nodes = this.state.nodes.filter((n) => n.id !== nodeId);
     const lvl = pods.length ? "error" : "info";
     this.log(lvl, `Terminated ${node.name}${pods.length ? ` (force-killed ${pods.length} pod(s)!)` : ""}.`);
+    this.checkUpgradeComplete();
   }
 
   evictPod(pod, node, penalty, reason) {
@@ -152,6 +206,97 @@ export class Game {
     this.state.breakdown.disruption -= penalty;
     this.state.metrics.evictions += 1;
     void reason;
+  }
+
+  // --- spot interruptions --------------------------------------------------
+  /** The cloud reclaims a spot node: its workload is evicted and it's gone. */
+  reclaimSpotNode(node) {
+    const pods = this.workloadPodsOnNode(node);
+    for (const pod of pods) this.evictPod(pod, node, SPOT_RECLAIM_PEN, "spot-reclaim");
+    this.purgeDaemonPods(node);
+    this.state.nodes = this.state.nodes.filter((n) => n.id !== node.id);
+    this.state.metrics.spotReclaims += 1;
+    this.log("error", `Spot interruption: ${node.name} reclaimed by the cloud (${pods.length} pod(s) evicted).`);
+    this.checkUpgradeComplete();
+  }
+
+  // --- cluster upgrades ----------------------------------------------------
+  /** Control-plane upgrade event: bump the target version; nodes now lag. */
+  triggerUpgrade() {
+    this.state.clusterMinor += 1;
+    this.state.upgradePending = true;
+    this.log(
+      "error",
+      `Control plane upgraded to v1.${this.state.clusterMinor}. Drain & restart every node to match!`
+    );
+  }
+
+  /**
+   * Responsibly restart a node onto the current version: gracefully drain its
+   * workload, drop its daemonset pods, then reboot (it returns Ready on the new
+   * version after its boot time). Force-restarting a node full of pods is the
+   * irresponsible way and is discouraged by the drain penalty.
+   */
+  upgradeNode(nodeId) {
+    const node = this.nodeById(nodeId);
+    if (!node) return { ok: false, reason: "node not found" };
+    if (node.minor >= this.state.clusterMinor) return { ok: false, reason: "already up to date" };
+    if (["Provisioning", "Upgrading", "Reclaiming"].includes(node.status)) {
+      return { ok: false, reason: `node is ${node.status.toLowerCase()}` };
+    }
+    const pods = this.workloadPodsOnNode(node);
+    for (const pod of pods) this.evictPod(pod, node, DRAIN_EVICT_PEN, "upgrade");
+    this.purgeDaemonPods(node);
+    node.status = "Upgrading";
+    node.provisioningTicksLeft = INSTANCE_TYPES[node.type].bootTicks;
+    this.log("warn", `Upgrading ${node.name} → v1.${this.state.clusterMinor} (${pods.length} pod(s) drained).`);
+    return { ok: true };
+  }
+
+  /** When every node is on the current version, the rollout is complete. */
+  checkUpgradeComplete() {
+    if (!this.state.upgradePending) return;
+    const outdated = this.state.nodes.some((n) => n.minor < this.state.clusterMinor);
+    if (!outdated) {
+      this.state.upgradePending = false;
+      this.state.score += UPGRADE_DONE_BONUS;
+      this.state.breakdown.upgrade += UPGRADE_DONE_BONUS;
+      this.log("good", `Cluster fully upgraded to v1.${this.state.clusterMinor}. Clean rollout! +${UPGRADE_DONE_BONUS}`);
+    }
+  }
+
+  /**
+   * Advance the spot market one tick: a mean-reverting random walk with the odd
+   * price spike, then roll interruption dice for each spot node. Warned nodes
+   * count down a short notice (during which you can drain them) before the cloud
+   * reclaims them. Higher prices mean more interruptions.
+   */
+  updateSpotMarket() {
+    const s = this.state;
+    const r = this.rng;
+    let sp = s.spotPrice + (1 - s.spotPrice) * 0.03 + (r() - 0.5) * 0.08;
+    if (r() < 0.004) sp += 0.8 + r(); // occasional price spike
+    s.spotPrice = Math.max(0.2, Math.min(3, sp));
+
+    for (const node of [...s.nodes]) {
+      if (!node.spot) continue;
+      if (node.status === "Reclaiming") {
+        node.spotWarnTicksLeft -= 1;
+        if (node.spotWarnTicksLeft <= 0) this.reclaimSpotNode(node);
+        continue;
+      }
+      if (node.status === "Ready" || node.status === "Cordoned") {
+        const p = SPOT_RECLAIM_BASE * (0.5 + s.spotPrice);
+        if (r() < p) {
+          node.status = "Reclaiming";
+          node.spotWarnTicksLeft = SPOT_WARNING_TICKS;
+          this.log(
+            "warn",
+            `Spot notice: ${node.name} will be reclaimed in ${(SPOT_WARNING_TICKS / TICKS_PER_SECOND).toFixed(0)}s.`
+          );
+        }
+      }
+    }
   }
 
   // --- scheduling actions --------------------------------------------------
@@ -228,6 +373,21 @@ export class Game {
     const s = this.state;
     if (s.scaleCooldown > 0) s.scaleCooldown -= 1;
 
+    // Automated rolling upgrade: bring outdated nodes up one at a time. We only
+    // start a new one when nothing is already booting/upgrading, which keeps the
+    // rollout safe (never tears down the whole cluster at once).
+    if (s.upgradePending) {
+      // One upgrade at a time keeps the rollout safe, but don't wait on routine
+      // provisioning (spot replacements etc.) or the rollout can stall.
+      const upgrading = s.nodes.some((n) => n.status === "Upgrading");
+      if (!upgrading) {
+        const outdated = s.nodes
+          .filter((n) => n.status === "Ready" && n.minor < s.clusterMinor)
+          .sort((a, b) => this.workloadPodsOnNode(a).length - this.workloadPodsOnNode(b).length)[0];
+        if (outdated) this.upgradeNode(outdated.id);
+      }
+    }
+
     if (s.scaleCooldown === 0) {
       const ready = this.schedulableNodes();
       const unfittable = this.pendingPods().filter(
@@ -261,10 +421,14 @@ export class Game {
       }
     }
 
-    // Scale down: terminate a node that has been idle a while (keep at least one).
+    // Scale down: terminate a node idle of *workload* a while (keep at least one).
     if (s.scaleCooldown === 0 && this.schedulableNodes().length > 1) {
       const idle = this.state.nodes.find(
-        (n) => n.status === "Ready" && n.podIds.length === 0 && n.idleTicks > 20
+        (n) =>
+          n.status === "Ready" &&
+          n.minor >= s.clusterMinor &&
+          this.workloadPodsOnNode(n).length === 0 &&
+          n.idleTicks > 20
       );
       if (idle) {
         this.deleteNode(idle.id);
@@ -279,16 +443,34 @@ export class Game {
     const s = this.state;
     s.tick += 1;
 
-    // 1. node provisioning
+    // 1. node provisioning + upgrade completion
     for (const node of s.nodes) {
-      if (node.status === "Provisioning") {
+      if (node.status === "Provisioning" || node.status === "Upgrading") {
         node.provisioningTicksLeft -= 1;
         if (node.provisioningTicksLeft <= 0) {
+          const wasUpgrade = node.status === "Upgrading";
           node.status = "Ready";
-          this.log("good", `${node.name} is now Ready.`);
+          if (wasUpgrade) {
+            node.minor = s.clusterMinor;
+            s.metrics.nodesUpgraded += 1;
+            this.log("good", `${node.name} back online on v1.${node.minor}.`);
+          } else {
+            this.log("good", `${node.name} is now Ready.`);
+          }
+          this.reconcileDaemonSets(node);
+          this.checkUpgradeComplete();
         }
       }
     }
+
+    // 1b. cluster upgrade events
+    if (s.nextUpgradeTick && s.tick >= s.nextUpgradeTick) {
+      this.triggerUpgrade();
+      s.nextUpgradeTick = s.tick + (this.scenario.upgradeEvery || 700);
+    }
+
+    // 1c. spot market + interruptions
+    this.updateSpotMarket();
 
     // 2. spawn workload (respecting each app's replica cap)
     const aliveByApp = {};
@@ -308,9 +490,13 @@ export class Game {
     if (s.autoSchedule) this.runAutoScheduler();
     if (s.autoScale) this.runAutoScaler();
 
-    // 4. advance running jobs, track idleness
+    // 4. advance running jobs, track idleness (daemonset-only nodes count idle)
     for (const node of s.nodes) {
-      if (node.podIds.length === 0 && node.status === "Ready") node.idleTicks += 1;
+      const hasWorkload = node.podIds.some((id) => {
+        const p = s.pods.get(id);
+        return p && p.kind !== "daemon";
+      });
+      if (!hasWorkload && node.status === "Ready") node.idleTicks += 1;
       else node.idleTicks = 0;
     }
     for (const pod of [...s.pods.values()]) {
@@ -336,17 +522,25 @@ export class Game {
       }
     }
 
-    // 6. scoring (utilization reward + latency/cost pressure)
+    // 6. scoring (utilization reward + latency/cost pressure + upgrade tech-debt)
     const util = this.clusterUtilization();
     s.lastUtil = util;
     const utilDelta = util * UTIL_W;
     const latDelta = pendingCount * PENDING_PEN;
     const hourlyCost = this.hourlyCost();
     const costDelta = hourlyCost * COST_PEN;
-    s.score += utilDelta - latDelta - costDelta;
+    let outdatedDelta = 0;
+    if (s.upgradePending) {
+      const outdated = s.nodes.filter(
+        (n) => n.minor < s.clusterMinor && ["Ready", "Cordoned"].includes(n.status)
+      ).length;
+      outdatedDelta = outdated * OUTDATED_PEN;
+    }
+    s.score += utilDelta - latDelta - costDelta - outdatedDelta;
     s.breakdown.util += utilDelta;
     s.breakdown.latency -= latDelta;
     s.breakdown.cost -= costDelta;
+    s.breakdown.upgrade -= outdatedDelta;
 
     return s;
   }
@@ -372,7 +566,7 @@ export class Game {
   /** Average utilization (cpu+mem)/2 across nodes that are up (paying). */
   clusterUtilization() {
     const up = this.state.nodes.filter((n) =>
-      ["Ready", "Cordoned", "Draining"].includes(n.status)
+      ["Ready", "Cordoned", "Draining", "Reclaiming"].includes(n.status)
     );
     if (up.length === 0) return 0;
     let sum = 0;
@@ -388,11 +582,11 @@ export class Game {
     return sum / up.length;
   }
 
-  /** Sum of $/hr for every node currently powered on. */
+  /** Sum of $/hr for every node currently powered on (spot at live price). */
   hourlyCost() {
     return this.state.nodes
       .filter((n) => n.status !== "Terminating")
-      .reduce((s, n) => s + n.cost, 0);
+      .reduce((s, n) => s + effectiveCost(n, this.state.spotPrice), 0);
   }
 
   avgLatencySeconds() {
@@ -403,8 +597,15 @@ export class Game {
 
   runningCount() {
     let n = 0;
-    for (const p of this.state.pods.values()) if (p.status === "Running") n += 1;
+    for (const p of this.state.pods.values()) {
+      if (p.status === "Running" && p.kind !== "daemon") n += 1;
+    }
     return n;
+  }
+
+  /** Count of nodes not yet on the current cluster version. */
+  outdatedNodeCount() {
+    return this.state.nodes.filter((n) => n.minor < this.state.clusterMinor).length;
   }
 
   uptimeSeconds() {

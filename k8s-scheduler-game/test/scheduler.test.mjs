@@ -171,6 +171,142 @@ test("workload generator is deterministic for a seed", () => {
   assert.deepEqual(a, b);
 });
 
+function bootNode(game, node) {
+  for (let i = 0; i < INSTANCE_TYPES[node.type].bootTicks + 1; i++) game.tick();
+}
+
+test("daemonsets run one pod per node, match selectors, and never queue", () => {
+  const game = new Game("steady");
+  // Start nodes are non-GPU: node-exporter + fluent-bit + kube-proxy = 3 each.
+  const node = game.schedulableNodes()[0];
+  const daemons = game.podsOnNode(node).filter((p) => p.kind === "daemon");
+  assert.equal(daemons.length, 3);
+  assert.ok(daemons.every((p) => p.daemonOf));
+  assert.equal(game.state.pendingIds.length, 0); // daemonsets are not scheduled via the queue
+
+  const gpu = game.addNode("gpu-xlarge");
+  bootNode(game, gpu);
+  const gpuReady = game.nodeById(gpu.id);
+  const names = game.podsOnNode(gpuReady).filter((p) => p.kind === "daemon").map((p) => p.daemonOf);
+  assert.ok(names.includes("nvidia-device-plugin"), "GPU node gets the device plugin daemonset");
+  assert.equal(names.length, 4);
+});
+
+test("daemonsets are overhead: they reduce schedulable capacity", () => {
+  const game = new Game("steady");
+  const node = game.schedulableNodes()[0];
+  const free = freeResources(node, game.podsOnNode(node));
+  assert.ok(free.cpu < node.cpu, "daemonsets consume cpu");
+  assert.ok(free.mem < node.mem, "daemonsets consume memory");
+});
+
+test("drain keeps daemonset pods; delete purges them with no pod leak", () => {
+  const game = new Game("steady");
+  const node = game.schedulableNodes()[0];
+  const pod = createPod("frontend", makeRng(7), 0);
+  game.state.pods.set(pod.id, pod);
+  game.state.pendingIds.push(pod.id);
+  game.schedulePod(pod.id, node.id);
+
+  const daemonsBefore = game.podsOnNode(node).filter((p) => p.kind === "daemon").length;
+  assert.ok(daemonsBefore >= 3);
+  game.drain(node.id);
+  assert.equal(pod.status, "Pending"); // workload evicted
+  assert.equal(game.podsOnNode(node).filter((p) => p.kind === "daemon").length, daemonsBefore); // daemons stay
+
+  const daemonIds = game.podsOnNode(node).filter((p) => p.kind === "daemon").map((p) => p.id);
+  game.deleteNode(node.id);
+  for (const id of daemonIds) assert.equal(game.state.pods.has(id), false);
+});
+
+test("spot reclamation evicts workload, drops the node, and is counted", () => {
+  const game = new Game("steady");
+  const spot = game.addNode("spot-medium");
+  bootNode(game, spot);
+  const node = game.nodeById(spot.id);
+  assert.equal(node.status, "Ready");
+
+  const pod = createPod("batch", makeRng(9), game.state.tick); // batch tolerates spot
+  game.state.pods.set(pod.id, pod);
+  game.state.pendingIds.push(pod.id);
+  assert.equal(game.schedulePod(pod.id, node.id).ok, true);
+
+  const daemonIds = game.podsOnNode(node).filter((p) => p.kind === "daemon").map((p) => p.id);
+  game.reclaimSpotNode(node);
+  assert.ok(!game.nodeById(spot.id)); // node is gone
+  assert.equal(pod.status, "Pending");
+  assert.ok(game.state.pendingIds.includes(pod.id));
+  assert.equal(game.state.metrics.spotReclaims, 1);
+  for (const id of daemonIds) assert.equal(game.state.pods.has(id), false);
+});
+
+test("spot price fluctuates over time but stays in bounds", () => {
+  const game = new Game("steady");
+  const seen = new Set();
+  for (let i = 0; i < 300; i++) {
+    game.tick();
+    assert.ok(game.state.spotPrice >= 0.2 && game.state.spotPrice <= 3);
+    seen.add(game.state.spotPrice.toFixed(3));
+  }
+  assert.ok(seen.size > 5, "spot price should vary");
+});
+
+test("upgradeNode drains workload and reboots onto the new version", () => {
+  const game = new Game("steady");
+  const node = game.schedulableNodes()[0];
+  const pod = createPod("api", makeRng(11), 0);
+  game.state.pods.set(pod.id, pod);
+  game.state.pendingIds.push(pod.id);
+  game.schedulePod(pod.id, node.id);
+
+  game.triggerUpgrade();
+  const target = game.state.clusterMinor;
+  assert.equal(game.state.upgradePending, true);
+  assert.ok(node.minor < target);
+
+  const r = game.upgradeNode(node.id);
+  assert.equal(r.ok, true);
+  assert.equal(node.status, "Upgrading");
+  assert.equal(pod.status, "Pending"); // workload gracefully drained
+  assert.equal(game.podsOnNode(node).filter((p) => p.kind === "daemon").length, 0);
+
+  bootNode(game, node);
+  assert.equal(node.status, "Ready");
+  assert.equal(node.minor, target);
+  assert.ok(game.podsOnNode(node).filter((p) => p.kind === "daemon").length >= 3); // daemons recreated
+  assert.ok(game.state.metrics.nodesUpgraded >= 1);
+});
+
+test("completing a version rollout awards the bonus exactly once", () => {
+  const game = new Game("steady");
+  game.triggerUpgrade();
+  const m = game.state.clusterMinor;
+  const before = game.state.breakdown.upgrade;
+  for (const n of game.state.nodes) n.minor = m; // pretend every node was restarted
+  game.checkUpgradeComplete();
+  assert.equal(game.state.upgradePending, false);
+  assert.equal(game.state.breakdown.upgrade - before, 35);
+  game.checkUpgradeComplete(); // idempotent
+  assert.equal(game.state.breakdown.upgrade - before, 35);
+});
+
+test("auto rolling upgrade brings the whole fleet current under automation", () => {
+  const game = new Game("steady");
+  game.state.autoSchedule = true;
+  game.state.autoScale = true;
+  for (let i = 0; i < 60; i++) game.tick(); // warm up
+  game.triggerUpgrade();
+  const target = game.state.clusterMinor;
+  let done = false;
+  for (let i = 0; i < 250 && !done; i++) {
+    game.tick();
+    done = !game.state.upgradePending;
+  }
+  assert.equal(done, true, "rollout should finish");
+  assert.ok(game.state.nodes.every((n) => n.minor >= target));
+  assert.ok(game.state.metrics.nodesUpgraded >= 1);
+});
+
 test("soak: every scenario runs 1200 ticks under full automation without overcommit", () => {
   for (const id of Object.keys(SCENARIOS)) {
     const game = new Game(id);
