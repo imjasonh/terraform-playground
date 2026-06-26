@@ -11,90 +11,103 @@ export const SLA_PENDING_TICKS = 40; // a pod pending longer than this breaches 
 export const ZONES = ["us-east-1a", "us-east-1b", "us-east-1c"];
 
 /**
- * Node instance types ("node pools"). Each carries baked-in labels and taints,
- * exactly like a managed node group in EKS/GKE. cost is a relative $/hour figure
- * used purely for scoring.
+ * Node instance types ("node pools"), modeled on real AWS EC2 families. Each
+ * carries baked-in labels and taints, exactly like a managed node group in
+ * EKS/GKE. Specs and `cost` ($/hour) mirror AWS on-demand pricing in us-east-1
+ * (Linux): c5 compute-optimized general purpose, c5d (compute + local NVMe SSD)
+ * for storage-bound apps, r5 memory-optimized, and g4dn (NVIDIA T4) GPU — plus
+ * spot variants of the c5s. CPU is in millicores, memory in MiB. Spot `cost` is
+ * the on-demand reference price; spot nodes are billed at the live spot price
+ * (a fraction of it — see engine).
  */
 export const INSTANCE_TYPES = {
-  "general-medium": {
-    key: "general-medium",
+  "c5.xlarge": {
+    key: "c5.xlarge",
     family: "general",
     cpu: 4000,
     mem: 8192,
     gpu: 0,
-    cost: 0.16,
+    cost: 0.17,
     bootTicks: 8,
-    labels: { "node.kubernetes.io/instance-type": "general-medium", disktype: "hdd" },
+    labels: { "node.kubernetes.io/instance-type": "c5.xlarge", disktype: "network" },
     taints: [],
   },
-  "general-large": {
-    key: "general-large",
+  "c5.2xlarge": {
+    key: "c5.2xlarge",
     family: "general",
     cpu: 8000,
     mem: 16384,
     gpu: 0,
-    cost: 0.32,
+    cost: 0.34,
     bootTicks: 10,
-    labels: { "node.kubernetes.io/instance-type": "general-large", disktype: "hdd" },
+    labels: { "node.kubernetes.io/instance-type": "c5.2xlarge", disktype: "network" },
     taints: [],
   },
-  "ssd-large": {
-    key: "ssd-large",
+  "c5d.2xlarge": {
+    key: "c5d.2xlarge",
     family: "ssd",
     cpu: 8000,
     mem: 16384,
     gpu: 0,
-    cost: 0.42,
+    cost: 0.384,
     bootTicks: 10,
-    labels: { "node.kubernetes.io/instance-type": "ssd-large", disktype: "ssd" },
+    labels: { "node.kubernetes.io/instance-type": "c5d.2xlarge", disktype: "ssd" },
     taints: [],
   },
-  "mem-xlarge": {
-    key: "mem-xlarge",
+  "r5.2xlarge": {
+    key: "r5.2xlarge",
     family: "mem",
     cpu: 8000,
-    mem: 65536,
+    mem: 65536, // 64 GiB
     gpu: 0,
-    cost: 0.55,
+    cost: 0.504,
     bootTicks: 12,
-    labels: { "node.kubernetes.io/instance-type": "mem-xlarge", disktype: "ssd" },
+    labels: { "node.kubernetes.io/instance-type": "r5.2xlarge", disktype: "ssd" },
     taints: [],
   },
-  "gpu-xlarge": {
-    key: "gpu-xlarge",
+  "g4dn.xlarge": {
+    key: "g4dn.xlarge",
     family: "gpu",
-    cpu: 8000,
-    mem: 32768,
-    gpu: 4,
-    cost: 2.4,
+    cpu: 4000,
+    mem: 16384,
+    gpu: 1, // 1× NVIDIA T4
+    cost: 0.526,
     bootTicks: 16,
     labels: {
-      "node.kubernetes.io/instance-type": "gpu-xlarge",
+      "node.kubernetes.io/instance-type": "g4dn.xlarge",
       disktype: "ssd",
       accelerator: "nvidia-t4",
     },
     taints: [{ key: "nvidia.com/gpu", value: "present", effect: "NoSchedule" }],
   },
-  "spot-medium": {
-    key: "spot-medium",
+  "c5.xlarge-spot": {
+    key: "c5.xlarge-spot",
     family: "spot",
     cpu: 4000,
     mem: 8192,
     gpu: 0,
-    cost: 0.05,
+    cost: 0.17, // on-demand reference; billed at the live spot fraction
     bootTicks: 6,
-    labels: { "node.kubernetes.io/instance-type": "spot-medium", disktype: "hdd" },
+    labels: {
+      "node.kubernetes.io/instance-type": "c5.xlarge",
+      "karpenter.sh/capacity-type": "spot",
+      disktype: "network",
+    },
     taints: [{ key: "spot", value: "true", effect: "NoSchedule" }],
   },
-  "spot-large": {
-    key: "spot-large",
+  "c5.2xlarge-spot": {
+    key: "c5.2xlarge-spot",
     family: "spot",
     cpu: 8000,
     mem: 16384,
     gpu: 0,
-    cost: 0.09,
+    cost: 0.34,
     bootTicks: 6,
-    labels: { "node.kubernetes.io/instance-type": "spot-large", disktype: "hdd" },
+    labels: {
+      "node.kubernetes.io/instance-type": "c5.2xlarge",
+      "karpenter.sh/capacity-type": "spot",
+      disktype: "network",
+    },
     taints: [{ key: "spot", value: "true", effect: "NoSchedule" }],
   },
 };

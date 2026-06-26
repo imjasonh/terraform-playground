@@ -10,6 +10,7 @@ import {
   SLA_PENDING_TICKS,
   DAEMONSETS,
   effectiveCost,
+  randHash,
 } from "./types.js";
 import { bestNodeFor, evaluateFit, selectorMatches, summarizePendingReason } from "./scheduler.js";
 import { SCENARIOS, makeRng, spawnForTick, createDaemonPod } from "./workload.js";
@@ -53,8 +54,9 @@ export class Game {
       // cluster version: nodes carry a minor version; an upgrade bumps the target.
       clusterMinor: 30,
       upgradePending: false,
-      // spot market: a fluctuating multiplier applied to spot node $/hr.
-      spotPrice: 1,
+      // spot market: the live spot price as a fraction of on-demand (<1 means
+      // savings; ~0.45 ≈ 55% off). Drives both billing and interruption risk.
+      spotPrice: 0.4,
       nextUpgradeTick: scenario.upgradeEvery || 0,
       // running tallies for the score breakdown panel
       breakdown: { util: 0, latency: 0, cost: 0, jobs: 0, sla: 0, disruption: 0, upgrade: 0 },
@@ -105,9 +107,11 @@ export class Game {
     if (!spec) throw new Error(`unknown instance type ${typeKey}`);
     this.state.nodeSeq += 1;
     const z = zone || ZONES[this.state.nodeSeq % ZONES.length];
+    // Random k8s-style name (e.g. node-xugjs); seq still backs the stable id.
+    const name = `node-${randHash(this.rng, 5)}`;
     const node = {
       id: `node-${this.state.nodeSeq}`,
-      name: `node-${this.state.nodeSeq}`,
+      name,
       type: typeKey,
       cpu: spec.cpu,
       mem: spec.mem,
@@ -266,17 +270,19 @@ export class Game {
   }
 
   /**
-   * Advance the spot market one tick: a mean-reverting random walk with the odd
-   * price spike, then roll interruption dice for each spot node. Warned nodes
-   * count down a short notice (during which you can drain them) before the cloud
-   * reclaims them. Higher prices mean more interruptions.
+   * Advance the spot market one tick. spotPrice is the fraction of on-demand
+   * that spot currently costs: a mean-reverting random walk around ~0.45
+   * (~55% savings), clamped below 1 (AWS never charges spot above on-demand),
+   * with the odd demand spike. Then roll interruption dice for each spot node —
+   * a pricier (hotter) market means more reclaims. Warned nodes count down a
+   * short notice (during which you can drain them) before being reclaimed.
    */
   updateSpotMarket() {
     const s = this.state;
     const r = this.rng;
-    let sp = s.spotPrice + (1 - s.spotPrice) * 0.03 + (r() - 0.5) * 0.08;
-    if (r() < 0.004) sp += 0.8 + r(); // occasional price spike
-    s.spotPrice = Math.max(0.2, Math.min(3, sp));
+    let sp = s.spotPrice + (0.45 - s.spotPrice) * 0.03 + (r() - 0.5) * 0.05;
+    if (r() < 0.004) sp += 0.25 + r() * 0.2; // occasional demand spike toward on-demand
+    s.spotPrice = Math.max(0.2, Math.min(0.95, sp));
 
     for (const node of [...s.nodes]) {
       if (!node.spot) continue;
@@ -358,15 +364,15 @@ export class Game {
 
   /** The instance type the autoscaler would provision to host this pod. */
   scaleUpTypeForPod(pod) {
-    if (pod.gpu > 0) return "gpu-xlarge";
+    if (pod.gpu > 0) return "g4dn.xlarge";
     if (pod.nodeSelector && pod.nodeSelector.disktype === "ssd") {
-      return pod.mem > 8192 ? "mem-xlarge" : "ssd-large";
+      return pod.mem > 8192 ? "r5.2xlarge" : "c5d.2xlarge";
     }
     // batch jobs tolerate spot — grab cheap, interruptible capacity for them
     if (pod.kind === "job" && (pod.tolerations || []).some((t) => t.key === "spot")) {
-      return "spot-medium";
+      return "c5.2xlarge-spot";
     }
-    return "general-large";
+    return "c5.2xlarge";
   }
 
   runAutoScaler() {
@@ -393,19 +399,33 @@ export class Game {
       const unfittable = this.pendingPods().filter(
         (pod) => !ready.some((n) => evaluateFit(pod, n, this.podsOnNode(n)).ok)
       );
-      const provisioning = s.nodes.filter((n) => n.status === "Provisioning").length;
-      // ~8 generic pods fit on a fresh node; discount capacity already booting.
-      let budget = Math.min(3, Math.ceil(unfittable.length / 8) - provisioning);
 
-      if (unfittable.length > 0 && budget > 0) {
+      if (unfittable.length > 0) {
         const added = [];
+        const provisioning = s.nodes.filter((n) => n.status === "Provisioning");
+
+        // GPU pods need a dedicated single-GPU node each: provision one per
+        // uncovered GPU pod (minus GPU nodes already booting), capped per burst.
+        const gpuPending = unfittable.filter((p) => p.gpu > 0).length;
+        const gpuBooting = provisioning.filter((n) => n.gpu > 0).length;
+        const gpuToAdd = Math.min(3, Math.max(0, gpuPending - gpuBooting));
+        for (let i = 0; i < gpuToAdd; i++) {
+          this.addNode("g4dn.xlarge");
+          added.push("g4dn.xlarge");
+        }
+
+        // Everything else bin-packs several pods per node. Add general capacity
+        // sized to the backlog, plus one node per distinct specialized type.
+        const other = unfittable.filter((p) => p.gpu === 0);
+        const otherBooting = provisioning.filter((n) => n.gpu === 0).length;
+        let budget = Math.min(3, Math.ceil(other.length / 8) - otherBooting);
         const usedSpecial = new Set();
-        // Highest priority first so scarce gpu/ssd workloads aren't starved.
-        const queue = [...unfittable].sort((a, b) => b.priority - a.priority);
+        // Highest priority first so scarce ssd workloads aren't starved.
+        const queue = [...other].sort((a, b) => b.priority - a.priority);
         for (const pod of queue) {
           if (budget <= 0) break;
           const type = this.scaleUpTypeForPod(pod);
-          if (type !== "general-large") {
+          if (type !== "c5.2xlarge") {
             // one specialized node hosts several such pods — don't over-add
             if (usedSpecial.has(type)) continue;
             usedSpecial.add(type);
@@ -414,6 +434,7 @@ export class Game {
           added.push(type);
           budget -= 1;
         }
+
         if (added.length) {
           this.log("info", `Autoscaler: scaling up (+${added.length}: ${[...new Set(added)].join(", ")}).`);
           s.scaleCooldown = 3;
