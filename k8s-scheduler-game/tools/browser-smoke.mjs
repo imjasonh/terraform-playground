@@ -120,7 +120,7 @@ async function main() {
   // Build a richer scene for the screenshot: add a spot node and kick off a
   // cluster upgrade so daemonsets, spot pricing and the rollout are all visible.
   await evaluate(`(() => { const {game,ui}=window.__kube;
-    game.addNode('spot-large'); game.triggerUpgrade();
+    game.addNode('c5.2xlarge-spot'); game.triggerUpgrade();
     for (let i=0;i<8;i++) game.tick(); ui.markDirty(); ui.render(); return 'ok'; })()`);
   await sleep(500);
 

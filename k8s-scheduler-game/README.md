@@ -63,15 +63,33 @@ Keep the queue empty, keep nodes busy, and don't overspend.
   matching node. They tolerate every taint, can't be moved, and consume capacity everywhere —
   so they're per-node overhead that rewards running **fewer, larger** nodes. `kubectl drain`
   leaves them alone; they're recreated whenever a node joins or finishes an upgrade.
-- **Spot nodes** ⚡ — `spot-medium`/`spot-large` cost a fraction of on-demand, but they're
-  billed at a **fluctuating spot price** and the cloud can **reclaim them at any time**. You get
-  a brief **Reclaiming** countdown to drain them gracefully; if you don't, their pods are
-  evicted back to the queue. Only put fault-tolerant work (e.g. `batch`) on spot.
+- **Spot nodes** ⚡ — spot `c5.xlarge`/`c5.2xlarge` cost a fraction of on-demand, but they're
+  billed at a **fluctuating spot price** (shown as a `<1×` multiplier of on-demand — e.g. `0.45×`
+  is ~55% off) and the cloud can **reclaim them at any time**. You get a brief **Reclaiming**
+  countdown to drain them gracefully; if you don't, their pods are evicted back to the queue.
+  Only put fault-tolerant work (e.g. `batch`) on spot.
 - **Cluster upgrades** — every so often the control plane jumps a minor version and every node
   falls behind (its version badge turns amber). Restart them **responsibly** — a few at a time,
   so workloads always have somewhere to land — using each node's **⤴ Upgrade** button (drain +
   reboot onto the new version). Out-of-date nodes bleed score until the rollout finishes, and
   completing the whole fleet pays a bonus.
+
+### Node pools
+
+Pools are modeled on real **AWS EC2** families with their on-demand prices (us-east-1, Linux):
+
+| Pool | vCPU | Memory | GPU | $/hr | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `c5.xlarge` | 4 | 8 GiB | — | $0.17 | general purpose (compute-optimized) |
+| `c5.2xlarge` | 8 | 16 GiB | — | $0.34 | general purpose |
+| `c5d.2xlarge` | 8 | 16 GiB | — | $0.384 | local **NVMe SSD** (`disktype=ssd`) for cache/postgres |
+| `r5.2xlarge` | 8 | 64 GiB | — | $0.504 | memory-optimized |
+| `g4dn.xlarge` | 4 | 16 GiB | 1× T4 | $0.526 | GPU (`nvidia.com/gpu` taint, `accelerator=nvidia-t4`) |
+| `c5.xlarge`/`c5.2xlarge` **spot** | 4 / 8 | 8 / 16 GiB | — | spot | billed at the live spot price (a fraction of on-demand) |
+
+Pod requests are realistic too: `frontend` 250m/256Mi, `api` 500m/512Mi, `cache` 500m/2Gi,
+`postgres` 1000m/6Gi, `batch` 1000m/1Gi, `ml-train` 2000m/8Gi + 1 GPU — plus the per-node
+DaemonSet overhead.
 
 ### Operating the cluster
 
@@ -112,8 +130,9 @@ The headline KPIs in the top bar are the ones the prompt asks you to optimize:
 
 - **Utilization** — average CPU+memory packing across the nodes you're paying for.
 - **Avg latency** — mean time pods waited in `Pending` before being scheduled.
-- …alongside pending/running counts, ready/total nodes, hourly cost, **spot price**, the current
-  **cluster version** (with how many nodes still need upgrading), and SLA breaches.
+- …alongside pending/running counts, ready/total nodes, hourly cost, the **spot price** (as a
+  `<1×` fraction of on-demand — lower means bigger savings), the current **cluster version** (with
+  how many nodes still need upgrading), and SLA breaches.
 
 ---
 
